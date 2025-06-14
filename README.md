@@ -1,8 +1,22 @@
 # agrifood-cost-margin-senegal
+.
+├── data/
+│   ├── chirps_raw/
+│   └── burkina_shp/
+├── notebooks/
+│   └── rainfall_analysis.ipynb
+├── scripts/
+│   └── download_chirps.py
+├── assets/
+│   └── rainfall_map_july15.png
+│   └── rainfall_animation.gif
+│   └── anomaly_2022.gif
+├── README.md
+
 
 
 agrifood-cost-margin-senegal/
-│
+.
 ├── 📁 data/                     # Raw & intermediate data
 │   ├── raw/                    # Survey results, bulletins
 │   ├── processed/              # Cleaned CSVs, merged data
