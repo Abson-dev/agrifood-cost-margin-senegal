@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 # agrifood-cost-margin-senegal
 
 ```plaintext
@@ -43,3 +44,5 @@ agrifood-cost-margin-senegal/
 
 
 
+=======
+>>>>>>> Stashed changes
