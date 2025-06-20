@@ -4,8 +4,3 @@ folium
 streamlit
 streamlit-folium
 uuid
-rasterio
-numpy
-geopandas
-Image
-branca.element
