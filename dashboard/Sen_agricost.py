@@ -87,7 +87,6 @@ def load_geospatial_data(raster_path, friction_path, markets_path, roads_path):
         st.error(f"Error loading geospatial data: {str(e)}")
         return None, None, None, None, None, None
 
-@st.cache_data
 def generate_raster_images(travel_data, friction_data, travel_bounds, friction_bounds):
     travel_png_path, friction_png_path, image_bounds = None, None, None
 
