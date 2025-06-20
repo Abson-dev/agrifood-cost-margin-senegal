@@ -37,10 +37,10 @@ def load_commodity_data(region_file='commodity_prices_merged.xlsx', market_file=
                 # Check for invalid data
                 invalid_coords = region_df[region_df['Régions - Latitude'].isna() | region_df['Régions - Longitude'].isna()]
                 if not invalid_coords.empty:
-                    st.warning(f"Found {len(invalid_coords)} rows with invalid coordinates in region file")
+                    st.warning(f"Found {len(invalid_coords)} rows with invalid coordinates in region data")
                 invalid_prices = region_df[region_df['Price'].isna()]
                 if not invalid_prices.empty:
-                    st.warning(f"Found {len(invalid_prices)} rows with invalid or missing prices in region file")
+                    st.warning(f"Found {len(invalid_prices)} rows with invalid or missing prices in region data")
         else:
             st.warning(f"Region file '{region_file}' not found. Continuing with market data only.")
 
@@ -75,10 +75,10 @@ def load_commodity_data(region_file='commodity_prices_merged.xlsx', market_file=
         # Check for invalid data
         invalid_coords = market_df[market_df['Régions - Latitude'].isna() | market_df['Régions - Longitude'].isna()]
         if not invalid_coords.empty:
-            st.warning(f"Found {len(invalid_coords)} rows with invalid coordinates in market file")
+            st.warning(f"Found {len(invalid_coords)} rows with invalid coordinates in market data")
         invalid_prices = market_df[market_df['Price'].isna()]
         if not invalid_prices.empty:
-            st.warning(f"Found {len(invalid_prices)} rows with invalid or missing prices in market file")
+            st.warning(f"Found {len(invalid_prices)} rows with invalid or missing prices in market data")
 
         return region_df, market_df
     except FileNotFoundError:
@@ -360,7 +360,7 @@ def generate_map(region_df, market_df, year, month, map_style, travel_png_path, 
         friction_legend._template = Template(friction_legend_html)
         m.get_root().add_child(friction_legend)
 
-    # Add commodity marker legend (for region-level markers)
+    # Add region commodity marker legend
     commodity_legend_html = """
     {% macro html(this, kwargs) %}
     <div style="
@@ -388,6 +388,33 @@ def generate_map(region_df, market_df, year, month, map_style, travel_png_path, 
     commodity_legend = MacroElement()
     commodity_legend._template = Template(commodity_legend_html)
     m.get_root().add_child(commodity_legend)
+
+    # Add market commodity marker legend
+    market_legend_html = """
+    {% macro html(this, kwargs) %}
+    <div style="
+        position: fixed;
+        top: 140px;
+        right: 20px;
+        width: 180px;
+        height: 70px;
+        background-color: white;
+        border:2px solid grey;
+        z-index:9999;
+        font-size:14px;
+        padding: 10px;
+        box-shadow: 2px 2px 6px rgba(0,0,0,0.3);
+    ">
+    <b>Market Commodities</b><br>
+    <div style="margin-top:10px;">
+      <div style="background:#008000;width:20px;height:20px;display:inline-block;"></div> Markets
+    </div>
+    </div>
+    {% endmacro %}
+    """
+    market_legend = MacroElement()
+    market_legend._template = Template(market_legend_html)
+    m.get_root().add_child(market_legend)
 
     # Add roads layer if available
     if roads is not None:
