@@ -88,6 +88,7 @@ def load_geospatial_data(raster_path, friction_path, markets_path, roads_path):
         return None, None, None, None, None, None
 
 def generate_raster_images(travel_data, friction_data, travel_bounds, friction_bounds):
+    """Generate PNG images for raster layers without caching due to unhashable inputs."""
     travel_png_path, friction_png_path, image_bounds = None, None, None
 
     # Travel time breakpoints and colors
@@ -131,8 +132,8 @@ def generate_raster_images(travel_data, friction_data, travel_bounds, friction_b
 
     return travel_png_path, friction_png_path, image_bounds
 
-@st.cache_data
 def generate_map(df, year, month, map_style, travel_png_path, friction_png_path, image_bounds, markets, roads, selected_commodities):
+    """Generate the Folium map without caching due to unhashable inputs (e.g., DataFrames)."""
     # Filter commodity data by year, month, and selected commodities
     filtered_df = df[(df['Year'] == year) & (df['Month'] == month) & (df['Commodity'].isin(selected_commodities))]
     if filtered_df.empty:
@@ -140,9 +141,9 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
         grouped = None
     else:
         grouped = filtered_df.groupby(['Régions Name', 'Régions - RegionId', 'Régions - Latitude', 'Régions - Longitude']).agg({
-            'Commodity': lambda x: list(x),
-            'Price': lambda x: list(x),
-            'Unit': lambda x: list(x)
+            'Commodity': list,
+            'Price': list,
+            'Unit': list
         }).reset_index()
         grouped['commodity_count'] = grouped['Commodity'].apply(len)
 
