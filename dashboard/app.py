@@ -1,3 +1,9 @@
+import os
+st.write("Current working directory:", os.getcwd())
+st.write("Files in this folder:", os.listdir())
+
+
+
 import pandas as pd
 import folium
 import streamlit as st
