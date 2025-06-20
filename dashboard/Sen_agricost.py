@@ -18,15 +18,25 @@ def load_commodity_data(input_file='commodity_prices_merged.xlsx'):
     try:
         df = pd.read_excel(input_file, engine='openpyxl')
         required_columns = ['Year', 'Month', 'Commodity', 'Régions Name', 
-                           'Régions - RegionId', 'Régions - Latitude', 'Régions - Longitude']
+                           'Régions - RegionId', 'Régions - Latitude', 'Régions - Longitude', 'Price', 'Unit']
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
             st.error(f"Missing required columns: {', '.join(missing_columns)}")
             return None
+        # Validate data types
         df['Year'] = pd.to_numeric(df['Year'], errors='coerce')
         df['Month'] = pd.to_numeric(df['Month'], errors='coerce')
         df['Régions - Latitude'] = pd.to_numeric(df['Régions - Latitude'], errors='coerce')
         df['Régions - Longitude'] = pd.to_numeric(df['Régions - Longitude'], errors='coerce')
+        df['Price'] = pd.to_numeric(df['Price'], errors='coerce')
+        df['Unit'] = df['Unit'].astype(str).fillna('Unknown')
+        # Check for invalid data
+        invalid_coords = df[df['Régions - Latitude'].isna() | df['Régions - Longitude'].isna()]
+        if not invalid_coords.empty:
+            st.warning(f"Found {len(invalid_coords)} rows with invalid coordinates")
+        invalid_prices = df[df['Price'].isna()]
+        if not invalid_prices.empty:
+            st.warning(f"Found {len(invalid_prices)} rows with invalid or missing prices")
         return df
     except FileNotFoundError:
         st.error(f"Input file '{input_file}' not found.")
@@ -98,18 +108,21 @@ def generate_raster_images(travel_data, friction_data, travel_bounds, friction_b
     return travel_png_path, friction_png_path, [[travel_bounds.bottom, travel_bounds.left], [travel_bounds.top, travel_bounds.right]]
 
 @st.cache_data
-def generate_map(df, year, month, travel_png_path, friction_png_path, image_bounds, markets, roads):
-    # Filter commodity data
-    filtered_df = df[(df['Year'] == year) & (df['Month'] == month)]
+def generate_map(df, year, month, map_style, travel_png_path, friction_png_path, image_bounds, markets, roads, selected_commodities):
+    # Filter commodity data by year, month, and selected commodities
+    filtered_df = df[(df['Year'] == year) & (df['Month'] == month) & (df['Commodity'].isin(selected_commodities))]
     if filtered_df.empty:
-        st.warning(f"No commodity data found for Year {year}, Month {month}.")
+        st.warning(f"No commodity data found for Year {year}, Month {month}, and selected commodities.")
         grouped = None
     else:
-        grouped = filtered_df.groupby(['Régions Name', 'Régions - RegionId', 'Régions - Latitude', 'Régions - Longitude'])['Commodity'].unique().reset_index()
+        grouped = filtered_df.groupby(['Régions Name', 'Régions - RegionId', 'Régions - Latitude', 'Régions - Longitude']).agg({
+            'Commodity': lambda x: list(x),
+            'Price': lambda x: list(x),
+            'Unit': lambda x: list(x)
+        }).reset_index()
         grouped['commodity_count'] = grouped['Commodity'].apply(len)
 
     # Initialize map
-    map_style = st.sidebar.selectbox("Map Style", ["OpenStreetMap", "CartoDB Positron", "Stamen Terrain"], index=1)
     m = folium.Map(location=[14.5, -14.5], zoom_start=7.3, tiles=map_style)
 
     # Add raster overlays
@@ -153,7 +166,11 @@ def generate_map(df, year, month, travel_png_path, friction_png_path, image_boun
                 continue
             commodity_count = row['commodity_count']
             color = 'blue' if commodity_count < 5 else 'orange' if commodity_count < 10 else 'red'
-            commodity_list = '<br>'.join(row['Commodity'])
+            commodity_details = [
+                f"{commodity}: {price:.2f} {unit}" if not pd.isna(price) else f"{commodity}: Price not available"
+                for commodity, price, unit in zip(row['Commodity'], row['Price'], row['Unit'])
+            ]
+            commodity_list = '<br>'.join(commodity_details)
             popup_content = f"""
             <div style='width: 250px'>
                 <h4>{row['Régions Name']}</h4>
@@ -228,7 +245,7 @@ def generate_map(df, year, month, travel_png_path, friction_png_path, image_boun
       <div style="background:#31a354;width:20px;height:20px;display:inline-block;"></div> ≤ 0.01<br>
       <div style="background:#78c679;width:20px;height:20px;display:inline-block;"></div> ≤ 0.1<br>
       <div style="background:#c2e699;width:20px;height:20px;display:inline-block;"></div> ≤ 0.5<br>
-      <div style="background:#fdae61;width:20px;20px;display:inline-block;"></div> ≤ 1.0<br>
+      <div style="background:#fdae61;width:20px;height:20px;display:inline-block;"></div> ≤ 1.0<br>
       <div style="background:#f46d43;width:20px;height:20px;display:inline-block;"></div> ≤ 2.0<br>
       <div style="background:#a50026;width:20px;height:20px;display:inline-block;"></div> ≤ 5.0<br>
       <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> > 5.0<br>
@@ -243,19 +260,24 @@ def generate_map(df, year, month, travel_png_path, friction_png_path, image_boun
     # Add layer control
     folium.LayerControl().add_to(m)
 
-    return m, grouped['Régions Name'].tolist() if grouped is not None else []
+    return m, grouped['Régions Name'].tolist() if grouped is not None else [], filtered_df
 
 def main():
     st.title("Senegal Commodity and Geospatial Analysis Map")
-    st.markdown("Explore commodity availability, travel time to cities, and friction surfaces across Senegal.")
+    st.markdown("Explore commodity availability, prices, travel time to cities, and friction surfaces across Senegal.")
 
     # Sidebar for controls
     st.sidebar.title("Map Controls")
-    
+    map_style = st.sidebar.selectbox("Map Style", ["OpenStreetMap", "CartoDB Positron", "Stamen Terrain"], index=1)
+
     # Load commodity data
     commodity_df = load_commodity_data()
     if commodity_df is None:
         return
+
+    # Commodity filter
+    commodities = sorted(commodity_df['Commodity'].dropna().unique())
+    selected_commodities = st.sidebar.multiselect("Select Commodities", commodities, default=commodities)
 
     # Load geospatial data
     raster_path = 'C:/Users/AHema/OneDrive - CGIAR/Desktop/2025/agrifood-cost-margin-senegal/data/geo/Travel time/201501_Global_Travel_Time_to_Cities_SEN.tiff'
@@ -308,15 +330,25 @@ def main():
 
     # Generate and display map
     st.subheader(f"Map for {month_names[selected_month_num]} {selected_year}")
-    map_obj, regions_mapped = generate_map(commodity_df, selected_year, selected_month_num, 
-                                          travel_png_path, friction_png_path, image_bounds, markets, roads)
+    map_obj, regions_mapped, filtered_df = generate_map(
+        commodity_df, selected_year, selected_month_num, map_style, 
+        travel_png_path, friction_png_path, image_bounds, markets, roads, selected_commodities
+    )
     
     if map_obj:
         folium_static(map_obj, width=1000, height=600)
         if regions_mapped:
             st.write(f"Regions mapped: {', '.join(regions_mapped)}")
         else:
-            st.write("No commodity regions to display for the selected year and month.")
+            st.write("No commodity regions to display for the selected year, month, and commodities.")
+        
+        # Display commodity details in a table
+        if not filtered_df.empty:
+            st.subheader("Commodity Details")
+            display_df = filtered_df[['Régions Name', 'Commodity', 'Price', 'Unit']].copy()
+            display_df['Price'] = display_df['Price'].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "N/A")
+            display_df = display_df.sort_values(['Régions Name', 'Commodity'])
+            st.dataframe(display_df, use_container_width=True)
     else:
         st.write("Unable to generate map due to missing data.")
 
