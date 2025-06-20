@@ -1,13 +1,15 @@
 import os
+import pandas as pd
+import folium
+import streamlit as st
+from streamlit_folium import folium_static
+
 st.write("Current working directory:", os.getcwd())
 st.write("Files in this folder:", os.listdir())
 
 
 
-import pandas as pd
-import folium
-import streamlit as st
-from streamlit_folium import folium_static
+
 
 # Set page configuration
 st.set_page_config(page_title="Senegal Commodity Map", layout="wide")
