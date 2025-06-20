@@ -7,14 +7,18 @@ from streamlit_folium import folium_static
 st.set_page_config(page_title="Senegal Commodity Map", layout="wide")
 
 def load_data(input_file='commodity_prices_merged.xlsx'):
+    import os
+    st.write(f"Current working directory: {os.getcwd()}")
+    st.write(f"Checking for file: {os.path.abspath(input_file)}")
+    st.write(f"File exists: {os.path.exists(input_file)}")
     try:
         df = pd.read_excel(input_file, engine='openpyxl')
         return df
     except FileNotFoundError:
-        st.error(f"Input file '{input_file}' not found. Please ensure 'commodity_prices_merged.xlsx' exists.")
+        st.error(f"Input file '{input_file}' not found. Please ensure '{input_file}' exists.")
         return None
     except KeyError as e:
-        st.error(f"Column {str(e)} not found in the input file. Required columns: Year, Month, Commodity, Régions Name, Régions - RegionId, Régions - Latitude, Régions - Longitude.")
+        st.error(f"Column {str(e)} not found in the input file.")
         return None
     except Exception as e:
         st.error(f"Error loading file: {str(e)}")
