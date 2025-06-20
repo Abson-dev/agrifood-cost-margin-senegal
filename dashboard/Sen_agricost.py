@@ -309,8 +309,8 @@ def main():
     # Load geospatial data
     raster_path = './data/geo/Travel time/201501_Global_Travel_Time_to_Cities_SEN.tiff'
     friction_path = './data/geo/Travel time/201501_Global_Travel_Speed_Friction_Surface_SEN.tiff'
-    markets_path = './scripts/markets_from_excel.geojson'
-    roads_path = './scripts/roads_filtered.geojson'
+    markets_path = './data/geo/markets_from_excel.geojson'
+    roads_path = './data/geo/roads_filtered.geojson'
     
     travel_data, travel_bounds, friction_data, friction_bounds, markets, roads = load_geospatial_data(
         raster_path, friction_path, markets_path, roads_path
