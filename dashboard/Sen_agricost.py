@@ -51,7 +51,6 @@ def load_geospatial_data(raster_path, friction_path, markets_path, roads_path):
         # Load travel time raster
         with rasterio.open(raster_path) as src:
             travel_time = src.read(1)
-            travel_profile = src.profile
             travel_nodata = src.nodata
             travel_bounds = src.bounds
             travel_data = np.ma.masked_equal(travel_time, travel_nodata) if travel_nodata else np.ma.masked_invalid(travel_time)
@@ -128,7 +127,7 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
     # Add raster overlays
     folium.raster_layers.ImageOverlay(
         name="Travel Time",
-        image=travel_png_path,
+        image=trail_png_path,
         bounds=image_bounds,
         opacity=0.6,
         interactive=True,
@@ -280,10 +279,10 @@ def main():
     selected_commodities = st.sidebar.multiselect("Select Commodities", commodities, default=commodities)
 
     # Load geospatial data
-    raster_path = 'C:/Users/AHema/OneDrive - CGIAR/Desktop/2025/agrifood-cost-margin-senegal/data/geo/Travel time/201501_Global_Travel_Time_to_Cities_SEN.tiff'
-    friction_path = 'C:/Users/AHema/OneDrive - CGIAR/Desktop/2025/agrifood-cost-margin-senegal/data/geo/Travel time/201501_Global_Travel_Speed_Friction_Surface_SEN.tiff'
-    markets_path = 'C:/Users/AHema/OneDrive - CGIAR/Desktop/2025/agrifood-cost-margin-senegal/scripts/markets_from_excel.geojson'
-    roads_path = 'C:/Users/AHema/OneDrive - CGIAR/Desktop/2025/agrifood-cost-margin-senegal/scripts/roads_filtered.geojson'
+    raster_path = './data/geo/Travel time/201501_Global_Travel_Time_to_Cities_SEN.tiff'
+    friction_path = './data/geo/Travel time/201501_Global_Travel_Speed_Friction_Surface_SEN.tiff'
+    markets_path = './scripts/markets_from_excel.geojson'
+    roads_path = './scripts/roads_filtered.geojson'
     
     travel_data, travel_bounds, friction_data, friction_bounds, markets, roads = load_geospatial_data(
         raster_path, friction_path, markets_path, roads_path
@@ -349,6 +348,10 @@ def main():
             display_df['Price'] = display_df['Price'].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "N/A")
             display_df = display_df.sort_values(['Régions Name', 'Commodity'])
             st.dataframe(display_df, use_container_width=True)
+
+            # Download button for commodity data
+            csv = display_df.to_csv(index=False)
+            st.download_button("Download Commodity Data", csv, "commodity_data.csv", "text/csv")
     else:
         st.write("Unable to generate map due to missing data.")
 
