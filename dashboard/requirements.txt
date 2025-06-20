@@ -3,3 +3,4 @@ openpyxl
 folium
 streamlit
 streamlit-folium
+uuid
