@@ -3,7 +3,6 @@ import pandas as pd
 import folium
 import streamlit as st
 from streamlit_folium import folium_static
-import uuid
 
 # Set page configuration
 st.set_page_config(page_title="Senegal Commodity Map", layout="wide")
@@ -42,7 +41,7 @@ def load_data(input_file='commodity_prices_merged.xlsx'):
         return None
 
 @st.cache_data
-def generate_map(df, year, month):
+def generate_map(df, year, month, map_style):
     # Filter data for the selected year and month
     filtered_df = df[(df['Year'] == year) & (df['Month'] == month)]
     
@@ -59,7 +58,6 @@ def generate_map(df, year, month):
     grouped['commodity_count'] = grouped['Commodity'].apply(len)
 
     # Initialize the map, centered on Senegal (approx. coordinates: 14.5, -14.5)
-    map_style = st.sidebar.selectbox("Map Style", ["OpenStreetMap", "CartoDB Positron", "Stamen Terrain"], index=1)
     m = folium.Map(location=[14.5, -14.5], zoom_start=6, tiles=map_style)
 
     # Add markers for each region
@@ -118,6 +116,7 @@ def main():
 
     # Sidebar for controls
     st.sidebar.title("Map Controls")
+    map_style = st.sidebar.selectbox("Map Style", ["OpenStreetMap", "CartoDB Positron", "Stamen Terrain"], index=1)
 
     # Load data
     df = load_data()
@@ -148,7 +147,7 @@ def main():
 
     # Generate and display the map
     st.subheader(f"Commodities Available in {month_names[selected_month_num]} {selected_year}")
-    map_obj, regions_mapped, filtered_df = generate_map(df, selected_year, selected_month_num)
+    map_obj, regions_mapped, filtered_df = generate_map(df, selected_year, selected_month_num, map_style)
 
     if map_obj:
         folium_static(map_obj, width=1000, height=600)
