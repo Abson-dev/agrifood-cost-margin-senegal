@@ -6,7 +6,7 @@ from streamlit_folium import folium_static
 # Set page configuration
 st.set_page_config(page_title="Senegal Commodity Map", layout="wide")
 
-def load_data(input_file='C:/Users/YourName/agrifood-cost-margin-senegal/dashboard/commodity_prices_merged.xlsx'):
+def load_data(input_file='C:/Users/AHema/OneDrive - CGIAR/agrifood-cost-margin-senegal/dashboard/commodity_prices_merged.xlsx'):
     try:
         df = pd.read_excel(input_file, engine='openpyxl')
         return df
