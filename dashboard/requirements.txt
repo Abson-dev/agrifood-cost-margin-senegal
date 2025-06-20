@@ -7,5 +7,5 @@ uuid
 rasterio
 numpy
 geopandas
-PIL
+Image
 branca.element
