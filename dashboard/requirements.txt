@@ -1,6 +1,9 @@
-pandas
-openpyxl
-folium
 streamlit
 streamlit-folium
-uuid
+pandas
+folium
+rasterio
+numpy
+geopandas
+pillow
+openpyxl
