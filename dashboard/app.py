@@ -4,8 +4,8 @@ import folium
 import streamlit as st
 from streamlit_folium import folium_static
 
-st.write("Current working directory:", os.getcwd())
-st.write("Files in this folder:", os.listdir())
+#st.write("Current working directory:", os.getcwd())
+#st.write("Files in this folder:", os.listdir())
 
 
 
