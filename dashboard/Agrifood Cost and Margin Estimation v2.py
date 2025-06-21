@@ -510,6 +510,9 @@ def main():
     if df is None:
         return
 
+    # Debug: Display loaded columns
+    st.sidebar.write(f"Loaded columns: {df.columns.tolist()}")
+
     # Commodity filter
     commodities = sorted(set(df['commodity_retail'].dropna().unique()).union(set(df['commodity_farmgate_en'].dropna().unique())))
     default_commodities = commodities[:5] if len(commodities) >= 5 else commodities
