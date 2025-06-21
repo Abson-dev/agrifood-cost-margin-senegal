@@ -90,10 +90,10 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
         )
 
         # Check for duplicates after merging
-        duplicates = df[df.duplicated(subset=['market_id', 'year', 'month', 'commodity_retail', 'region_id'], keep=False)]
+        duplicates = df[df.duplicated(subset=['market_id', 'year', 'month', 'commodity_retail', 'region_id', 'commodity_farmgate'], keep=False)]
         if not duplicates.empty:
             st.warning(f"Removed {len(duplicates)} duplicate entries after merging")
-            df = df.drop_duplicates(subset=['market_id', 'year', 'month', 'commodity_retail', 'region_id'])
+            df = df.drop_duplicates(subset=['market_id', 'year', 'month', 'commodity_retail', 'region_id', 'commodity_farmgate'])
 
         # Check for invalid coordinates
         invalid_market_coords = df[df['latitude'].isna() | df['longitude'].isna()]
@@ -253,9 +253,12 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
         ).add_to(folium.FeatureGroup(name="Market Retail Commodities").add_to(m))
 
     # Process region-level (farmgate) data
-    region_grouped = filtered_df.groupby(['region_name', 'region_id', 'region_latitude', 'region_longitude', 'commodity_farmgate', 'year', 'month']).agg({
+    region_grouped = filtered_df.groupby(['region_id', 'commodity_farmgate', 'year', 'month']).agg({
         'price_farmgate': 'mean',
-        'unit2_farmgate': 'first'
+        'unit2_farmgate': 'first',
+        'region_latitude': 'first',
+        'region_longitude': 'first',
+        'region_name': 'first'
     }).reset_index()
     region_grouped = region_grouped.groupby(['region_name', 'region_id', 'region_latitude', 'region_longitude']).agg({
         'commodity_farmgate': list,
@@ -287,7 +290,7 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
             <h4>{row['region_name']} (Region)</h4>
             <b>Region ID:</b> {row['region_id']}<br>
             <b>Farmgate Commodities ({commodity_count}):</b><br>{commodity_list}<br>
-            <b>Coordinates:</b> {row['region_latitude']:.4f}, {row['longitude']:.4f}
+            <b>Coordinates:</b> {row['region_latitude']:.4f}, {row['region_longitude']:.4f}
         </div>
         """
         folium.CircleMarker(
