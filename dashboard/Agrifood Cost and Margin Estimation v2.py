@@ -8,6 +8,8 @@ import numpy as np
 import geopandas as gpd
 from PIL import Image
 from branca.element import Template, MacroElement
+import plotly.express as px
+import plotly.graph_objects as go
 
 # Set page configuration
 st.set_page_config(page_title="Senegal Commodity and Geospatial Map", layout="wide")
@@ -624,28 +626,101 @@ def main():
         else:
             st.write("No commodity data to display for the selected year, month, and commodities.")
         
-        # Display commodity details
+        # Plot retail and farmgate prices for the selected year
+        st.subheader(f"Price Comparison for {selected_year}")
         if not filtered_df.empty:
-            st.subheader("Commodity Details")
-            # Select available columns for display
-            display_columns = [
-                col for col in [
-                    'market', 'commodity_retail', 'price_retail', 'unit2_retail',
-                    'region_name', 'commodity_farmgate_en', 'price_farmgate', 'unit2_farmgate'
-                ] if col in filtered_df.columns
-            ]
-            if not display_columns:
-                st.warning("No valid columns available for commodity details table.")
+            # Filter data for the selected year (all months)
+            year_df = df[(df['year'] == selected_year) & 
+                         ((df['commodity_retail'].isin(selected_commodities)) | 
+                          (df['commodity_farmgate_en'].isin(selected_commodities)))]
+
+            if year_df.empty:
+                st.warning(f"No data available for selected commodities in {selected_year}.")
             else:
-                display_df = filtered_df[display_columns].copy()
-                if 'price_retail' in display_df.columns:
-                    display_df['price_retail'] = display_df['price_retail'].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "N/A")
-                if 'price_farmgate' in display_df.columns:
-                    display_df['price_farmgate'] = display_df['price_farmgate'].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "N/A")
-                display_df = display_df.sort_values(['market', 'region_name', 'commodity_retail'], na_position='last')
-                st.dataframe(display_df, use_container_width=True)
-                csv = display_df.to_csv(index=False)
-                st.download_button("Download Commodity Data", csv, "commodity_data.csv", "text/csv")
+                # Aggregate retail prices
+                retail_price_cols = ['commodity_retail', 'price_retail', 'unit2_retail']
+                retail_price_df = year_df[year_df['commodity_retail'].notna()][retail_price_cols].groupby(
+                    'commodity_retail'
+                ).agg({
+                    'price_retail': 'mean',
+                    'unit2_retail': 'first'
+                }).reset_index()
+
+                # Aggregate farmgate prices
+                farmgate_price_cols = ['commodity_farmgate_en', 'price_farmgate', 'unit2_farmgate']
+                farmgate_price_df = year_df[year_df['commodity_farmgate_en'].notna()][farmgate_price_cols].groupby(
+                    'commodity_farmgate_en'
+                ).agg({
+                    'price_farmgate': 'mean',
+                    'unit2_farmgate': 'first'
+                }).reset_index()
+
+                # Combine commodities
+                all_commodities = sorted(set(retail_price_df['commodity_retail'].dropna()).union(set(farmgate_price_df['commodity_farmgate_en'].dropna())))
+
+                # Prepare data for plotting
+                retail_prices = []
+                farmgate_prices = []
+                units = []
+                for commodity in all_commodities:
+                    retail_row = retail_price_df[retail_price_df['commodity_retail'] == commodity]
+                    farmgate_row = farmgate_price_df[farmgate_price_df['commodity_farmgate_en'] == commodity]
+                    
+                    retail_price = retail_row['price_retail'].iloc[0] if not retail_row.empty else np.nan
+                    farmgate_price = farmgate_row['price_farmgate'].iloc[0] if not farmgate_row.empty else np.nan
+                    unit = retail_row['unit2_retail'].iloc[0] if not retail_row.empty else farmgate_row['unit2_farmgate'].iloc[0] if not farmgate_row.empty else 'Unknown'
+                    
+                    retail_prices.append(retail_price)
+                    farmgate_prices.append(farmgate_price)
+                    units.append(unit)
+
+                # Create grouped bar plot
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    x=all_commodities,
+                    y=retail_prices,
+                    name='Retail Price',
+                    marker_color='green',
+                    text=[f"{p:.2f}" if not pd.isna(p) else "N/A" for p in retail_prices],
+                    textposition='auto'
+                ))
+                fig.add_trace(go.Bar(
+                    x=all_commodities,
+                    y=farmgate_prices,
+                    name='Farmgate Price',
+                    marker_color='blue',
+                    text=[f"{p:.2f}" if not pd.isna(p) else "N/A" for p in farmgate_prices],
+                    textposition='auto'
+                ))
+
+                fig.update_layout(
+                    title=f"Average Retail and Farmgate Prices for {selected_year}",
+                    xaxis_title="Commodity",
+                    yaxis_title="Price (FCFA)",
+                    barmode='group',
+                    xaxis_tickangle=-45,
+                    height=600,
+                    legend=dict(x=0.01, y=0.99),
+                    margin=dict(b=150)
+                )
+
+                # Add unit annotations to x-axis
+                for i, commodity in enumerate(all_commodities):
+                    fig.add_annotation(
+                        x=commodity,
+                        y=-0.1,
+                        xref="x",
+                        yref="paper",
+                        text=units[i],
+                        showarrow=False,
+                        font=dict(size=10),
+                        xanchor='center',
+                        yanchor='top'
+                    )
+
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("No commodity data available for the selected year and commodities.")
     else:
         st.write("Unable to generate map due to missing data.")
 
