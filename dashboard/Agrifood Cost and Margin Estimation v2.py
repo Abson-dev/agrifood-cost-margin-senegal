@@ -45,7 +45,7 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
         df['region_longitude'] = pd.to_numeric(df['region_longitude'], errors='coerce')
         df['price_retail'] = pd.to_numeric(df['price_retail'], errors='coerce')
         df['price_farmgate'] = pd.to_numeric(df['price_farmgate'], errors='coerce')
-        #df['unit_retail'] = df['unit_retail'].astype(str).fillna('Unknown')
+        df['unit_retail'] = df['unit_retail'].astype(str).fillna('Unknown')
         df['unit_farmgate'] = df['unit_farmgate'].astype(str).fillna('Unknown')
         df['unit2_retail'] = df['unit2_retail'].astype(str).fillna('Unknown')
         df['unit2_farmgate'] = df['unit2_farmgate'].astype(str).fillna('Unknown')
@@ -54,10 +54,15 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
         df['commodity_retail'] = df['commodity_retail'].str.strip().str.replace(r'\s+', ' ', regex=True).str.title()
         df['commodity_farmgate_en'] = df['commodity_farmgate_en'].str.strip().str.replace(r'\s+', ' ', regex=True).str.title()
 
-        # Deduplicate at load time, averaging prices for duplicates
-        retail_grouped = df.groupby(['market_id', 'year', 'month', 'commodity_retail']).agg({
+        # Deduplicate retail data
+        retail_cols = [
+            'market_id', 'year', 'month', 'commodity_retail', 'price_retail', 'unit_retail', 'unit2_retail',
+            'latitude', 'longitude', 'market', 'admin1', 'admin2', 'category', 'commodity_id',
+            'priceflag', 'pricetype', 'currency', 'usdprice'
+        ]
+        retail_df = df[retail_cols].drop_duplicates().groupby(['market_id', 'year', 'month', 'commodity_retail']).agg({
             'price_retail': 'mean',
-            #'unit_retail': 'first',
+            'unit_retail': 'first',
             'unit2_retail': 'first',
             'latitude': 'first',
             'longitude': 'first',
@@ -71,22 +76,27 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
             'currency': 'first',
             'usdprice': 'mean'
         }).reset_index()
-        farmgate_grouped = df.groupby(['region_id', 'year', 'month', 'commodity_farmgate_en']).agg({
+
+        # Deduplicate farmgate data
+        farmgate_cols = [
+            'region_id', 'year', 'month', 'commodity_farmgate_en', 'price_farmgate', 'unit_farmgate',
+            'unit2_farmgate', 'region_latitude', 'region_longitude', 'region_name'
+        ]
+        farmgate_df = df[farmgate_cols].drop_duplicates().groupby(['region_id', 'year', 'month', 'commodity_farmgate_en']).agg({
             'price_farmgate': 'mean',
-            #'unit_farmgate': 'first',
+            'unit_farmgate': 'first',
             'unit2_farmgate': 'first',
             'region_latitude': 'first',
             'region_longitude': 'first',
             'region_name': 'first'
         }).reset_index()
 
-        # Merge back to preserve all columns
-        df = retail_grouped.merge(
-            farmgate_grouped,
-            left_on=['year', 'month'],
-            right_on=['year', 'month'],
+        # Merge with full join to preserve all data
+        df = retail_df.merge(
+            farmgate_df,
+            on=['year', 'month'],
             how='outer',
-            suffixes=('', '_farmgate')
+            suffixes=('_retail', '_farmgate')
         )
 
         # Check for duplicates after merging
@@ -261,7 +271,7 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
         'region_name': 'first'
     }).reset_index()
     region_grouped = region_grouped.groupby(['region_name', 'region_id', 'region_latitude', 'region_longitude']).agg({
-        'commodity_farmgate': list,
+        'commodity_farmgate_en': list,
         'price_farmgate': list,
         'unit2_farmgate': list
     }).reset_index()
@@ -411,7 +421,7 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
       <div style="background:#ff0000;width:20px;height:20px;display:inline-block;"></div> ≥10 Commodities
     </div>
     </div>
-    {% endmacro %}
+    {% macro %}
     """
     commodity_legend = MacroElement()
     commodity_legend._template = Template(commodity_legend_html)
