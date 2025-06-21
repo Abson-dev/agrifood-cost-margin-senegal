@@ -135,7 +135,7 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
 
         return df
     except Exception as e:
-        st.error(f"Error loading file: {str(e)}")
+        st.error(f"Error loading commodity data: {str(e)}")
         return None
 
 @st.cache_data
@@ -144,6 +144,12 @@ def load_geospatial_data(raster_path, friction_path, markets_path, roads_path):
         # Initialize variables
         travel_data, travel_bounds, friction_data, friction_bounds, markets, roads = None, None, None, None, None, None
 
+        # Debug: Check file existence
+        st.sidebar.write(f"Travel raster exists: {os.path.exists(raster_path)}")
+        st.sidebar.write(f"Friction raster exists: {os.path.exists(friction_path)}")
+        st.sidebar.write(f"Markets GeoJSON exists: {os.path.exists(markets_path)}")
+        st.sidebar.write(f"Roads GeoJSON exists: {os.path.exists(roads_path)}")
+
         # Load travel time raster if file exists
         if os.path.exists(raster_path):
             with rasterio.open(raster_path) as src:
@@ -151,6 +157,7 @@ def load_geospatial_data(raster_path, friction_path, markets_path, roads_path):
                 travel_nodata = src.nodata
                 travel_bounds = src.bounds
                 travel_data = np.ma.masked_equal(travel_time, travel_nodata) if travel_nodata else np.ma.masked_invalid(travel_time)
+                st.sidebar.write(f"Travel raster loaded: Shape {travel_time.shape}, Nodata {travel_nodata}, Bounds {travel_bounds}")
         else:
             st.warning(f"Travel time raster file not found: {raster_path}. Continuing without travel time layer.")
 
@@ -161,17 +168,20 @@ def load_geospatial_data(raster_path, friction_path, markets_path, roads_path):
                 friction_nodata = src.nodata
                 friction_bounds = src.bounds
                 friction_data = np.ma.masked_equal(friction_data, friction_nodata) if friction_nodata else np.ma.masked_invalid(friction_data)
+                st.sidebar.write(f"Friction raster loaded: Shape {friction_data.shape}, Nodata {friction_nodata}, Bounds {friction_bounds}")
         else:
             st.warning(f"Friction raster file not found: {friction_path}. Continuing without friction layer.")
 
         # Load GeoJSON files if they exist
         if os.path.exists(markets_path):
             markets = gpd.read_file(markets_path)
+            st.sidebar.write(f"Markets GeoJSON loaded: {len(markets)} features")
         else:
             st.warning(f"Markets GeoJSON file not found: {markets_path}. Continuing without markets layer.")
 
         if os.path.exists(roads_path):
             roads = gpd.read_file(roads_path)
+            st.sidebar.write(f"Roads GeoJSON loaded: {len(roads)} features")
         else:
             st.warning(f"Roads GeoJSON file not found: {roads_path}. Continuing without roads layer.")
 
@@ -193,25 +203,44 @@ def generate_raster_images(travel_data, friction_data, travel_bounds, friction_b
         (253, 174, 97), (244, 109, 67), (165, 0, 38), (128, 0, 38)
     ]
     if travel_data is not None and travel_bounds is not None:
-        travel_rgb = np.zeros((travel_data.shape[0], travel_data.shape[1], 3), dtype=np.uint8)
-        for i in range(len(travel_breaks) - 1):
-            mask = (travel_data >= travel_breaks[i]) & (travel_data < travel_breaks[i+1])
-            for j in range(3):
-                travel_rgb[:, :, j][mask] = travel_colors[i][j]
-        travel_png_path = 'travel_time_colored.png'
-        Image.fromarray(travel_rgb).save(travel_png_path)
+        try:
+            travel_rgb = np.zeros((travel_data.shape[0], travel_data.shape[1], 3), dtype=np.uint8)
+            for i in range(len(travel_breaks) - 1):
+                mask = (travel_data >= travel_breaks[i]) & (travel_data < travel_breaks[i+1])
+                for j in range(3):
+                    travel_rgb[:, :, j][mask] = travel_colors[i][j]
+            travel_png_path = 'travel_time_colored.png'
+            Image.fromarray(travel_rgb).save(travel_png_path)
+            st.sidebar.write(f"Travel PNG generated: {travel_png_path}")
+        except Exception as e:
+            st.warning(f"Failed to generate travel PNG: {str(e)}")
+    else:
+        st.warning("Travel data or bounds not available. Skipping travel PNG generation.")
+
     if friction_data is not None and friction_bounds is not None:
-        friction_rgb = np.zeros((friction_data.shape[0], friction_data.shape[1], 3), dtype=np.uint8)
-        for i in range(len(friction_breaks) - 1):
-            mask = (friction_data >= friction_breaks[i]) & (friction_data < friction_breaks[i+1])
-            for j in range(3):
-                friction_rgb[:, :, j][mask] = friction_colors[i][j]
-        friction_png_path = 'friction_surface_colored.png'
-        Image.fromarray(friction_rgb).save(friction_png_path)
+        try:
+            friction_rgb = np.zeros((friction_data.shape[0], friction_data.shape[1], 3), dtype=np.uint8)
+            for i in range(len(friction_breaks) - 1):
+                mask = (friction_data >= friction_breaks[i]) & (friction_data < friction_breaks[i+1])
+                for j in range(3):
+                    friction_rgb[:, :, j][mask] = friction_colors[i][j]
+            friction_png_path = 'friction_surface_colored.png'
+            Image.fromarray(friction_rgb).save(friction_png_path)
+            st.sidebar.write(f"Friction PNG generated: {friction_png_path}")
+        except Exception as e:
+            st.warning(f"Failed to generate friction PNG: {str(e)}")
+    else:
+        st.warning("Friction data or bounds not available. Skipping friction PNG generation.")
+
     if travel_bounds is not None:
         image_bounds = [[travel_bounds.bottom, travel_bounds.left], [travel_bounds.top, travel_bounds.right]]
+        st.sidebar.write(f"Image bounds set from travel: {image_bounds}")
     elif friction_bounds is not None:
         image_bounds = [[friction_bounds.bottom, friction_bounds.left], [friction_bounds.top, friction_bounds.right]]
+        st.sidebar.write(f"Image bounds set from friction: {image_bounds}")
+    else:
+        st.warning("No valid bounds available for raster overlays.")
+
     return travel_png_path, friction_png_path, image_bounds
 
 def generate_map(df, year, month, map_style, travel_png_path, friction_png_path, image_bounds, markets, roads, selected_commodities):
@@ -340,89 +369,101 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
                 fill_opacity=0.7
             ).add_to(folium.FeatureGroup(name="Region Farmgate Commodities").add_to(m))
 
-    # Add raster overlays
-    if travel_png_path and image_bounds:
-        folium.raster_layers.ImageOverlay(
-            name="Travel Time",
-            image=travel_png_path,
-            bounds=image_bounds,
-            opacity=0.6,
-            interactive=True,
-            cross_origin=False
-        ).add_to(m)
-        travel_legend_html = """
-        {% macro html(this, kwargs) %}
-        <div style="
-            position: fixed;
-            bottom: 20px;
-            left: 20px;
-            width: 180px;
-            height: 230px;
-            background-color: white;
-            border:2px solid grey;
-            z-index:9999;
-            font-size:14px;
-            padding: 10px;
-            box-shadow: 2px 2px 6px rgba(0,0,0,0.3);
-        ">
-        <b>Travel Time (min)</b><br>
-        <div style="margin-top:10px;">
-          <div style="background:#ffffcc;width:20px;height:20px;display:inline-block;"></div> 0–10<br>
-          <div style="background:#ffeda0;width:20px;height:20px;display:inline-block;"></div> 10–30<br>
-          <div style="background:#feb24c;width:20px;height:20px;display:inline-block;"></div> 30–60<br>
-          <div style="background:#fd8d3c;width:20px;height:20px;display:inline-block;"></div> 60–120<br>
-          <div style="background:#f03b20;width:20px;height:20px;display:inline-block;"></div> 120–240<br>
-          <div style="background:#bd0026;width:20px;height:20px;display:inline-block;"></div> 240–1440<br>
-          <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> >1440
-        </div>
-        </div>
-        {% endmacro %}
-        """
-        travel_legend = MacroElement()
-        travel_legend._template = Template(travel_legend_html)
-        m.get_root().add_child(travel_legend)
+    # Add raster overlays with validation
+    if travel_png_path and image_bounds and os.path.exists(travel_png_path):
+        try:
+            folium.raster_layers.ImageOverlay(
+                name="Travel Time",
+                image=travel_png_path,
+                bounds=image_bounds,
+                opacity=0.6,
+                interactive=True,
+                cross_origin=False
+            ).add_to(m)
+            st.sidebar.write("Travel time raster layer added to map")
+            travel_legend_html = """
+            {% macro html(this, kwargs) %}
+            <div style="
+                position: fixed;
+                bottom: 20px;
+                left: 20px;
+                width: 180px;
+                height: 230px;
+                background-color: white;
+                border:2px solid grey;
+                z-index:9999;
+                font-size:14px;
+                padding: 10px;
+                box-shadow: 2px 2px 6px rgba(0,0,0,0.3);
+            ">
+            <b>Travel Time (min)</b><br>
+            <div style="margin-top:10px;">
+              <div style="background:#ffffcc;width:20px;height:20px;display:inline-block;"></div> 0–10<br>
+              <div style="background:#ffeda0;width:20px;height:20px;display:inline-block;"></div> 10–30<br>
+              <div style="background:#feb24c;width:20px;height:20px;display:inline-block;"></div> 30–60<br>
+              <div style="background:#fd8d3c;width:20px;height:20px;display:inline-block;"></div> 60–120<br>
+              <div style="background:#f03b20;width:20px;height:20px;display:inline-block;"></div> 120–240<br>
+              <div style="background:#bd0026;width:20px;height:20px;display:inline-block;"></div> 240–1440<br>
+              <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> >1440
+            </div>
+            </div>
+            {% endmacro %}
+            """
+            travel_legend = MacroElement()
+            travel_legend._template = Template(travel_legend_html)
+            m.get_root().add_child(travel_legend)
+        except Exception as e:
+            st.warning(f"Failed to add travel time raster layer: {str(e)}")
+    else:
+        st.warning(f"Travel raster not added: PNG exists: {os.path.exists(travel_png_path) if travel_png_path else False}, Bounds: {image_bounds is not None}")
 
-    if friction_png_path and image_bounds:
-        folium.raster_layers.ImageOverlay(
-            name="Friction Surface (min/m)",
-            image=friction_png_path,
-            bounds=image_bounds,
-            opacity=0.7,
-            interactive=True,
-            cross_origin=False
-        ).add_to(m)
-        friction_legend_html = """
-        {% macro html(this, kwargs) %}
-        <div style="
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            width: 200px;
-            height: 260px;
-            background-color: white;
-            border:2px solid grey;
-            z-index:9999;
-            font-size:14px;
-            padding: 10px;
-            box-shadow: 2px 2px 6px rgba(0,0,0,0.3);
-        ">
-        <b>Friction (min/m)</b><br>
-        <div style="margin-top:10px;">
-          <div style="background:#006837;width:20px;height:20px;display:inline-block;"></div> ≤ 0.001<br>
-          <div style="background:#31a354;width:20px;height:20px;display:inline-block;"></div> ≤ 0.01<br>
-          <div style="background:#78c679;width:20px;height:20px;display:inline-block;"></div> ≤ 0.1<br>
-          <div style="background:#c2e699;width:20px;height:20px;display:inline-block;"></div> ≤ 0.5<br>
-          <div style="background:#fdae61;width:20px;height:20px;display:inline-block;"></div> ≤ 1.0<br>
-          <div style="background:#f46d43;width:20px;height:20px;display:inline-block;"></div> ≤ 2.0<br>
-          <div style="background:#a50026;width:20px;height:20px;display:inline-block;"></div> ≤ 5.0<br>
-          <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> > 5.0
-        </div>
-        </div>
-        {% endmacro %}
-        """
-        friction_legend = MacroElement()
-        friction_legend._template = Template(friction_legend_html)
-        m.get_root().add_child(friction_legend)
+    if friction_png_path and image_bounds and os.path.exists(friction_png_path):
+        try:
+            folium.raster_layers.ImageOverlay(
+                name="Friction Surface (min/m)",
+                image=friction_png_path,
+                bounds=image_bounds,
+                opacity=0.7,
+                interactive=True,
+                cross_origin=False
+            ).add_to(m)
+            st.sidebar.write("Friction surface raster layer added to map")
+            friction_legend_html = """
+            {% macro html(this, kwargs) %}
+            <div style="
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                width: 200px;
+                height: 260px;
+                background-color: white;
+                border:2px solid grey;
+                z-index:9999;
+                font-size:14px;
+                padding: 10px;
+                box-shadow: 2px 2px 6px rgba(0,0,0,0.3);
+            ">
+            <b>Friction (min/m)</b><br>
+            <div style="margin-top:10px;">
+              <div style="background:#006837;width:20px;height:20px;display:inline-block;"></div> ≤ 0.001<br>
+              <div style="background:#31a354;width:20px;height:20px;display:inline-block;"></div> ≤ 0.01<br>
+              <div style="background:#78c679;width:20px;height:20px;display:inline-block;"></div> ≤ 0.1<br>
+              <div style="background:#c2e699;width:20px;height:20px;display:inline-block;"></div> ≤ 0.5<br>
+              <div style="background:#fdae61;width:20px;height:20px;display:inline-block;"></div> ≤ 1.0<br>
+              <div style="background:#f46d43;width:20px;height:20px;display:inline-block;"></div> ≤ 2.0<br>
+              <div style="background:#a50026;width:20px;height:20px;display:inline-block;"></div> ≤ 5.0<br>
+              <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> > 5.0
+            </div>
+            </div>
+            {% endmacro %}
+            """
+            friction_legend = MacroElement()
+            friction_legend._template = Template(friction_legend_html)
+            m.get_root().add_child(friction_legend)
+        except Exception as e:
+            st.warning(f"Failed to add friction surface raster layer: {str(e)}")
+    else:
+        st.warning(f"Friction raster not added: PNG exists: {os.path.exists(friction_png_path) if friction_png_path else False}, Bounds: {image_bounds is not None}")
 
     # Add legends for markers
     commodity_legend_html = """
