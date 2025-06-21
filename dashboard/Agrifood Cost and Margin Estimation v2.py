@@ -27,7 +27,7 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
             'date', 'admin1', 'admin2', 'market', 'market_id', 'latitude', 'longitude',
             'category', 'commodity_retail', 'commodity_id', 'unit_retail', 'priceflag',
             'pricetype', 'currency', 'price_retail', 'usdprice', 'unit2_retail',
-            'year', 'month', 'commodity_farmgate', 'region_name', 'region_id',
+            'year', 'month', 'commodity_farmgate_en', 'region_name', 'region_id',
             'region_latitude', 'region_longitude', 'price_farmgate', 'unit_farmgate', 'unit2_farmgate'
         ]
         missing_columns = [col for col in required_columns if col not in df.columns]
@@ -52,7 +52,7 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
 
         # Normalize commodity names to prevent duplicates due to formatting
         df['commodity_retail'] = df['commodity_retail'].str.strip().str.replace(r'\s+', ' ', regex=True).str.title()
-        df['commodity_farmgate'] = df['commodity_farmgate'].str.strip().str.replace(r'\s+', ' ', regex=True).str.title()
+        df['commodity_farmgate_en'] = df['commodity_farmgate_en'].str.strip().str.replace(r'\s+', ' ', regex=True).str.title()
 
         # Deduplicate at load time, averaging prices for duplicates
         retail_grouped = df.groupby(['market_id', 'year', 'month', 'commodity_retail']).agg({
@@ -71,7 +71,7 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
             'currency': 'first',
             'usdprice': 'mean'
         }).reset_index()
-        farmgate_grouped = df.groupby(['region_id', 'year', 'month', 'commodity_farmgate']).agg({
+        farmgate_grouped = df.groupby(['region_id', 'year', 'month', 'commodity_farmgate_en']).agg({
             'price_farmgate': 'mean',
             #'unit_farmgate': 'first',
             'unit2_farmgate': 'first',
@@ -90,10 +90,10 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
         )
 
         # Check for duplicates after merging
-        duplicates = df[df.duplicated(subset=['market_id', 'year', 'month', 'commodity_retail', 'region_id', 'commodity_farmgate'], keep=False)]
+        duplicates = df[df.duplicated(subset=['market_id', 'year', 'month', 'commodity_retail', 'region_id', 'commodity_farmgate_en'], keep=False)]
         if not duplicates.empty:
             st.warning(f"Removed {len(duplicates)} duplicate entries after merging")
-            df = df.drop_duplicates(subset=['market_id', 'year', 'month', 'commodity_retail', 'region_id', 'commodity_farmgate'])
+            df = df.drop_duplicates(subset=['market_id', 'year', 'month', 'commodity_retail', 'region_id', 'commodity_farmgate_en'])
 
         # Check for invalid coordinates
         invalid_market_coords = df[df['latitude'].isna() | df['longitude'].isna()]
@@ -198,7 +198,7 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
 
     # Filter data for selected year, month, and commodities
     filtered_df = df[(df['year'] == year) & (df['month'] == month) & 
-                    ((df['commodity_retail'].isin(selected_commodities)) | (df['commodity_farmgate'].isin(selected_commodities)))]
+                    ((df['commodity_retail'].isin(selected_commodities)) | (df['commodity_farmgate_en'].isin(selected_commodities)))]
 
     if filtered_df.empty:
         st.warning(f"No data found for Year {year}, Month {month}, and selected commodities.")
@@ -253,7 +253,7 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
         ).add_to(folium.FeatureGroup(name="Market Retail Commodities").add_to(m))
 
     # Process region-level (farmgate) data
-    region_grouped = filtered_df.groupby(['region_id', 'commodity_farmgate', 'year', 'month']).agg({
+    region_grouped = filtered_df.groupby(['region_id', 'commodity_farmgate_en', 'year', 'month']).agg({
         'price_farmgate': 'mean',
         'unit2_farmgate': 'first',
         'region_latitude': 'first',
@@ -265,13 +265,13 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
         'price_farmgate': list,
         'unit2_farmgate': list
     }).reset_index()
-    region_grouped['commodity_count'] = region_grouped['commodity_farmgate'].apply(len)
+    region_grouped['commodity_count'] = region_grouped['commodity_farmgate_en'].apply(len)
 
     # Check for duplicate commodities in region_grouped
     for _, row in region_grouped.iterrows():
-        unique_commodities = set(row['commodity_farmgate'])
-        if len(unique_commodities) < len(row['commodity_farmgate']):
-            st.warning(f"Duplicate farmgate commodities found for region {row['region_name']} (ID: {row['region_id']}): {row['commodity_farmgate']}")
+        unique_commodities = set(row['commodity_farmgate_en'])
+        if len(unique_commodities) < len(row['commodity_farmgate_en']):
+            st.warning(f"Duplicate farmgate commodities found for region {row['region_name']} (ID: {row['region_id']}): {row['commodity_farmgate_en']}")
 
     locations_mapped.extend(region_grouped['region_name'].tolist())
 
@@ -282,7 +282,7 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
         color = 'blue' if commodity_count < 5 else 'orange' if commodity_count < 10 else 'red'
         commodity_details = [
             f"{commodity}: {price:.2f} {unit}" if not pd.isna(price) else f"{commodity}: Price not available"
-            for commodity, price, unit in zip(row['commodity_farmgate'], row['price_farmgate'], row['unit2_farmgate'])
+            for commodity, price, unit in zip(row['commodity_farmgate_en'], row['price_farmgate'], row['unit2_farmgate'])
         ]
         commodity_list = '<br>'.join(commodity_details)
         popup_content = f"""
@@ -475,7 +475,7 @@ def main():
         return
 
     # Commodity filter
-    commodities = sorted(set(df['commodity_retail'].dropna().unique()).union(set(df['commodity_farmgate'].dropna().unique())))
+    commodities = sorted(set(df['commodity_retail'].dropna().unique()).union(set(df['commodity_farmgate_en'].dropna().unique())))
     default_commodities = commodities[:5] if len(commodities) >= 5 else commodities
     select_all = st.sidebar.checkbox("Select All Commodities", value=False)
     selected_commodities = st.sidebar.multiselect("Select Commodities", commodities, 
@@ -549,7 +549,7 @@ def main():
             st.subheader("Commodity Details")
             display_df = filtered_df[[
                 'market', 'commodity_retail', 'price_retail', 'unit2_retail',
-                'region_name', 'commodity_farmgate', 'price_farmgate', 'unit2_farmgate'
+                'region_name', 'commodity_farmgate_en', 'price_farmgate', 'unit2_farmgate'
             ]].copy()
             display_df['price_retail'] = display_df['price_retail'].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "N/A")
             display_df['price_farmgate'] = display_df['price_farmgate'].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "N/A")
