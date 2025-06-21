@@ -58,6 +58,7 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
         retail_grouped = df.groupby(['market_id', 'year', 'month', 'commodity_retail']).agg({
             'price_retail': 'mean',
             'unit_retail': 'first',
+            'unit2_retail': 'first',
             'latitude': 'first',
             'longitude': 'first',
             'market': 'first',
@@ -68,16 +69,15 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
             'priceflag': 'first',
             'pricetype': 'first',
             'currency': 'first',
-            'usdprice': 'mean',
-            'unit2_retail': 'first'
+            'usdprice': 'mean'
         }).reset_index()
         farmgate_grouped = df.groupby(['region_id', 'year', 'month', 'commodity_farmgate']).agg({
             'price_farmgate': 'mean',
             'unit_farmgate': 'first',
+            'unit2_farmgate': 'first',
             'region_latitude': 'first',
             'region_longitude': 'first',
-            'region_name': 'first',
-            'unit2_farmgate': 'first'
+            'region_name': 'first'
         }).reset_index()
 
         # Merge back to preserve all columns
@@ -205,14 +205,14 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
         return m, locations_mapped, filtered_df
 
     # Process market-level (retail) data
-    market_grouped = filtered_df.groupby(['market', 'market_id', 'latitude', 'longitude', 'commodity_retail']).agg({
+    market_grouped = filtered_df.groupby(['market', 'market_id', 'latitude', 'longitude', 'commodity_retail', 'year', 'month']).agg({
         'price_retail': 'mean',
-        'unit_retail': 'first'
+        'unit2_retail': 'first'
     }).reset_index()
     market_grouped = market_grouped.groupby(['market', 'market_id', 'latitude', 'longitude']).agg({
         'commodity_retail': list,
         'price_retail': list,
-        'unit_retail': list
+        'unit2_retail': list
     }).reset_index()
     market_grouped['commodity_count'] = market_grouped['commodity_retail'].apply(len)
 
@@ -230,7 +230,7 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
         commodity_count = row['commodity_count']
         commodity_details = [
             f"{commodity}: {price:.2f} {unit}" if not pd.isna(price) else f"{commodity}: Price not available"
-            for commodity, price, unit in zip(row['commodity_retail'], row['price_retail'], row['unit_retail'])
+            for commodity, price, unit in zip(row['commodity_retail'], row['price_retail'], row['unit2_retail'])
         ]
         commodity_list = '<br>'.join(commodity_details)
         popup_content = f"""
@@ -255,12 +255,12 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
     # Process region-level (farmgate) data
     region_grouped = filtered_df.groupby(['region_name', 'region_id', 'region_latitude', 'region_longitude', 'commodity_farmgate', 'year', 'month']).agg({
         'price_farmgate': 'mean',
-        'unit_farmgate': 'first'
+        'unit2_farmgate': 'first'
     }).reset_index()
     region_grouped = region_grouped.groupby(['region_name', 'region_id', 'region_latitude', 'region_longitude']).agg({
         'commodity_farmgate': list,
         'price_farmgate': list,
-        'unit_farmgate': list
+        'unit2_farmgate': list
     }).reset_index()
     region_grouped['commodity_count'] = region_grouped['commodity_farmgate'].apply(len)
 
@@ -279,7 +279,7 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
         color = 'blue' if commodity_count < 5 else 'orange' if commodity_count < 10 else 'red'
         commodity_details = [
             f"{commodity}: {price:.2f} {unit}" if not pd.isna(price) else f"{commodity}: Price not available"
-            for commodity, price, unit in zip(row['commodity_farmgate'], row['price_farmgate'], row['unit_farmgate'])
+            for commodity, price, unit in zip(row['commodity_farmgate'], row['price_farmgate'], row['unit2_farmgate'])
         ]
         commodity_list = '<br>'.join(commodity_details)
         popup_content = f"""
@@ -287,7 +287,7 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
             <h4>{row['region_name']} (Region)</h4>
             <b>Region ID:</b> {row['region_id']}<br>
             <b>Farmgate Commodities ({commodity_count}):</b><br>{commodity_list}<br>
-            <b>Coordinates:</b> {row['region_latitude']:.4f}, {row['region_longitude']:.4f}
+            <b>Coordinates:</b> {row['region_latitude']:.4f}, {row['longitude']:.4f}
         </div>
         """
         folium.CircleMarker(
@@ -545,8 +545,8 @@ def main():
         if not filtered_df.empty:
             st.subheader("Commodity Details")
             display_df = filtered_df[[
-                'market', 'commodity_retail', 'price_retail', 'unit_retail',
-                'region_name', 'commodity_farmgate', 'price_farmgate', 'unit_farmgate'
+                'market', 'commodity_retail', 'price_retail', 'unit2_retail',
+                'region_name', 'commodity_farmgate', 'price_farmgate', 'unit2_farmgate'
             ]].copy()
             display_df['price_retail'] = display_df['price_retail'].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "N/A")
             display_df['price_farmgate'] = display_df['price_farmgate'].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "N/A")
