@@ -45,7 +45,7 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
         df['region_longitude'] = pd.to_numeric(df['region_longitude'], errors='coerce')
         df['price_retail'] = pd.to_numeric(df['price_retail'], errors='coerce')
         df['price_farmgate'] = pd.to_numeric(df['price_farmgate'], errors='coerce')
-        df['unit_retail'] = df['unit_retail'].astype(str).fillna('Unknown')
+        #df['unit_retail'] = df['unit_retail'].astype(str).fillna('Unknown')
         df['unit_farmgate'] = df['unit_farmgate'].astype(str).fillna('Unknown')
         df['unit2_retail'] = df['unit2_retail'].astype(str).fillna('Unknown')
         df['unit2_farmgate'] = df['unit2_farmgate'].astype(str).fillna('Unknown')
@@ -57,7 +57,7 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
         # Deduplicate at load time, averaging prices for duplicates
         retail_grouped = df.groupby(['market_id', 'year', 'month', 'commodity_retail']).agg({
             'price_retail': 'mean',
-            'unit_retail': 'first',
+            #'unit_retail': 'first',
             'unit2_retail': 'first',
             'latitude': 'first',
             'longitude': 'first',
@@ -73,7 +73,7 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
         }).reset_index()
         farmgate_grouped = df.groupby(['region_id', 'year', 'month', 'commodity_farmgate']).agg({
             'price_farmgate': 'mean',
-            'unit_farmgate': 'first',
+            #'unit_farmgate': 'first',
             'unit2_farmgate': 'first',
             'region_latitude': 'first',
             'region_longitude': 'first',
