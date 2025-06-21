@@ -51,8 +51,8 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
         df['unit2_farmgate'] = df['unit2_farmgate'].astype(str).fillna('Unknown')
 
         # Normalize commodity names to prevent duplicates due to formatting
-        df['commodity_retail'] = df['commodity_retail'].str.strip().str.title()
-        df['commodity_farmgate'] = df['commodity_farmgate'].str.strip().str.title()
+        df['commodity_retail'] = df['commodity_retail'].str.strip().str.replace(r'\s+', ' ', regex=True).str.title()
+        df['commodity_farmgate'] = df['commodity_farmgate'].str.strip().str.replace(r'\s+', ' ', regex=True).str.title()
 
         # Deduplicate at load time, averaging prices for duplicates
         retail_grouped = df.groupby(['market_id', 'year', 'month', 'commodity_retail']).agg({
@@ -220,7 +220,7 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
     for _, row in market_grouped.iterrows():
         unique_commodities = set(row['commodity_retail'])
         if len(unique_commodities) < len(row['commodity_retail']):
-            st.warning(f"Duplicate commodities found for market {row['market']} (ID: {row['market_id']})")
+            st.warning(f"Duplicate retail commodities found for market {row['market']} (ID: {row['market_id']}): {row['commodity_retail']}")
 
     locations_mapped.extend(market_grouped['market'].tolist())
 
@@ -253,7 +253,7 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
         ).add_to(folium.FeatureGroup(name="Market Retail Commodities").add_to(m))
 
     # Process region-level (farmgate) data
-    region_grouped = filtered_df.groupby(['region_name', 'region_id', 'region_latitude', 'region_longitude', 'commodity_farmgate']).agg({
+    region_grouped = filtered_df.groupby(['region_name', 'region_id', 'region_latitude', 'region_longitude', 'commodity_farmgate', 'year', 'month']).agg({
         'price_farmgate': 'mean',
         'unit_farmgate': 'first'
     }).reset_index()
@@ -268,7 +268,7 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
     for _, row in region_grouped.iterrows():
         unique_commodities = set(row['commodity_farmgate'])
         if len(unique_commodities) < len(row['commodity_farmgate']):
-            st.warning(f"Duplicate commodities found for region {row['region_name']} (ID: {row['region_id']})")
+            st.warning(f"Duplicate farmgate commodities found for region {row['region_name']} (ID: {row['region_id']}): {row['commodity_farmgate']}")
 
     locations_mapped.extend(region_grouped['region_name'].tolist())
 
