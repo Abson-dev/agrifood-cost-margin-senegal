@@ -80,7 +80,10 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
 @st.cache_data
 def load_geospatial_data(raster_path, friction_path, markets_path, roads_path):
     try:
+        # Initialize variables
         travel_data, travel_bounds, friction_data, friction_bounds, markets, roads = None, None, None, None, None, None
+
+        # Load travel time raster if file exists
         if os.path.exists(raster_path):
             with rasterio.open(raster_path) as src:
                 travel_time = src.read(1)
@@ -88,23 +91,29 @@ def load_geospatial_data(raster_path, friction_path, markets_path, roads_path):
                 travel_bounds = src.bounds
                 travel_data = np.ma.masked_equal(travel_time, travel_nodata) if travel_nodata else np.ma.masked_invalid(travel_time)
         else:
-            st.warning(f"Travel time raster file not found: {raster_path}")
+            st.warning(f"Travel time raster file not found: {raster_path}. Continuing without travel time layer.")
+
+        # Load friction raster if file exists
         if os.path.exists(friction_path):
             with rasterio.open(friction_path) as src:
                 friction_data = src.read(1)
                 friction_nodata = src.nodata
                 friction_bounds = src.bounds
-                friction_data = np.ma.masked_equal(friction_data, friction_nodata) if frictionelderio_nodata else np.ma.masked_invalid(friction_data)
+                friction_data = np.ma.masked_equal(friction_data, friction_nodata) if friction_nodata else np.ma.masked_invalid(friction_data)
         else:
-            st.warning(f"Friction raster file not found: {friction_path}")
+            st.warning(f"Friction raster file not found: {friction_path}. Continuing without friction layer.")
+
+        # Load GeoJSON files if they exist
         if os.path.exists(markets_path):
             markets = gpd.read_file(markets_path)
         else:
-            st.warning(f"Markets GeoJSON file not found: {markets_path}")
+            st.warning(f"Markets GeoJSON file not found: {markets_path}. Continuing without markets layer.")
+
         if os.path.exists(roads_path):
             roads = gpd.read_file(roads_path)
         else:
-            st.warning(f"Roads GeoJSON file not found: {roads_path}")
+            st.warning(f"Roads GeoJSON file not found: {roads_path}. Continuing without roads layer.")
+
         return travel_data, travel_bounds, friction_data, friction_bounds, markets, roads
     except Exception as e:
         st.error(f"Error loading geospatial data: {str(e)}")
@@ -178,7 +187,7 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
         <div style='width: 250px'>
             <h4>{row['market']} (Market)</h4>
             <b>Market ID:</b> {row['market_id']}<br>
-            <b>Commodities ({commodity_count}):</b><br>{commodity_list}<br>
+            <b>Retail Commodities ({commodity_count}):</b><br>{commodity_list}<br>
             <b>Coordinates:</b> {row['latitude']:.4f}, {row['longitude']:.4f}
         </div>
         """
@@ -186,12 +195,12 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
             location=[row['latitude'], row['longitude']],
             radius=6 + (commodity_count * 1.5),
             popup=folium.Popup(popup_content, max_width=300),
-            tooltip=f"{row['market']}: {commodity_count} commodities (Market)",
+            tooltip=f"{row['market']}: {commodity_count} retail commodities (Market)",
             fill=True,
             fill_color='green',
             color='green',
             fill_opacity=0.7
-        ).add_to(folium.FeatureGroup(name="Market Commodities").add_to(m))
+        ).add_to(folium.FeatureGroup(name="Market Retail Commodities").add_to(m))
 
     # Process region-level (farmgate) data
     region_grouped = filtered_df.groupby(['region_name', 'region_id', 'region_latitude', 'region_longitude']).agg({
@@ -434,7 +443,7 @@ def main():
         st.sidebar.write(f"5th: {percentiles[0]:.2f} min")
         st.sidebar.write(f"25th: {percentiles[1]:.2f} min")
         st.sidebar.write(f"50th (median): {percentiles[2]:.2f} min")
-        st.sidebar.write(f"75th: {percentiles[3]:. sh2f} min")
+        st.sidebar.write(f"75th: {percentiles[3]:.2f} min")
         st.sidebar.write(f"95th: {percentiles[4]:.2f} min")
 
     # Year and month selection
