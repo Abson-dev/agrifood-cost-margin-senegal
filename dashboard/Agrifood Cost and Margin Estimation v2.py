@@ -50,10 +50,49 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
         df['unit2_retail'] = df['unit2_retail'].astype(str).fillna('Unknown')
         df['unit2_farmgate'] = df['unit2_farmgate'].astype(str).fillna('Unknown')
 
-        # Check for duplicates
+        # Normalize commodity names to prevent duplicates due to formatting
+        df['commodity_retail'] = df['commodity_retail'].str.strip().str.title()
+        df['commodity_farmgate'] = df['commodity_farmgate'].str.strip().str.title()
+
+        # Deduplicate at load time, averaging prices for duplicates
+        retail_grouped = df.groupby(['market_id', 'year', 'month', 'commodity_retail']).agg({
+            'price_retail': 'mean',
+            'unit_retail': 'first',
+            'latitude': 'first',
+            'longitude': 'first',
+            'market': 'first',
+            'admin1': 'first',
+            'admin2': 'first',
+            'category': 'first',
+            'commodity_id': 'first',
+            'priceflag': 'first',
+            'pricetype': 'first',
+            'currency': 'first',
+            'usdprice': 'mean',
+            'unit2_retail': 'first'
+        }).reset_index()
+        farmgate_grouped = df.groupby(['region_id', 'year', 'month', 'commodity_farmgate']).agg({
+            'price_farmgate': 'mean',
+            'unit_farmgate': 'first',
+            'region_latitude': 'first',
+            'region_longitude': 'first',
+            'region_name': 'first',
+            'unit2_farmgate': 'first'
+        }).reset_index()
+
+        # Merge back to preserve all columns
+        df = retail_grouped.merge(
+            farmgate_grouped,
+            left_on=['year', 'month'],
+            right_on=['year', 'month'],
+            how='outer',
+            suffixes=('', '_farmgate')
+        )
+
+        # Check for duplicates after merging
         duplicates = df[df.duplicated(subset=['market_id', 'year', 'month', 'commodity_retail', 'region_id'], keep=False)]
         if not duplicates.empty:
-            st.warning(f"Removed {len(duplicates)} duplicate entries")
+            st.warning(f"Removed {len(duplicates)} duplicate entries after merging")
             df = df.drop_duplicates(subset=['market_id', 'year', 'month', 'commodity_retail', 'region_id'])
 
         # Check for invalid coordinates
@@ -159,19 +198,30 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
 
     # Filter data for selected year, month, and commodities
     filtered_df = df[(df['year'] == year) & (df['month'] == month) & 
-                     ((df['commodity_retail'].isin(selected_commodities)) | (df['commodity_farmgate'].isin(selected_commodities)))]
+                    ((df['commodity_retail'].isin(selected_commodities)) | (df['commodity_farmgate'].isin(selected_commodities)))]
 
     if filtered_df.empty:
         st.warning(f"No data found for Year {year}, Month {month}, and selected commodities.")
         return m, locations_mapped, filtered_df
 
     # Process market-level (retail) data
-    market_grouped = filtered_df.groupby(['market', 'market_id', 'latitude', 'longitude']).agg({
+    market_grouped = filtered_df.groupby(['market', 'market_id', 'latitude', 'longitude', 'commodity_retail']).agg({
+        'price_retail': 'mean',
+        'unit_retail': 'first'
+    }).reset_index()
+    market_grouped = market_grouped.groupby(['market', 'market_id', 'latitude', 'longitude']).agg({
         'commodity_retail': list,
         'price_retail': list,
         'unit_retail': list
     }).reset_index()
     market_grouped['commodity_count'] = market_grouped['commodity_retail'].apply(len)
+
+    # Check for duplicate commodities in market_grouped
+    for _, row in market_grouped.iterrows():
+        unique_commodities = set(row['commodity_retail'])
+        if len(unique_commodities) < len(row['commodity_retail']):
+            st.warning(f"Duplicate commodities found for market {row['market']} (ID: {row['market_id']})")
+
     locations_mapped.extend(market_grouped['market'].tolist())
 
     for _, row in market_grouped.iterrows():
@@ -203,12 +253,23 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
         ).add_to(folium.FeatureGroup(name="Market Retail Commodities").add_to(m))
 
     # Process region-level (farmgate) data
-    region_grouped = filtered_df.groupby(['region_name', 'region_id', 'region_latitude', 'region_longitude']).agg({
+    region_grouped = filtered_df.groupby(['region_name', 'region_id', 'region_latitude', 'region_longitude', 'commodity_farmgate']).agg({
+        'price_farmgate': 'mean',
+        'unit_farmgate': 'first'
+    }).reset_index()
+    region_grouped = region_grouped.groupby(['region_name', 'region_id', 'region_latitude', 'region_longitude']).agg({
         'commodity_farmgate': list,
         'price_farmgate': list,
         'unit_farmgate': list
     }).reset_index()
     region_grouped['commodity_count'] = region_grouped['commodity_farmgate'].apply(len)
+
+    # Check for duplicate commodities in region_grouped
+    for _, row in region_grouped.iterrows():
+        unique_commodities = set(row['commodity_farmgate'])
+        if len(unique_commodities) < len(row['commodity_farmgate']):
+            st.warning(f"Duplicate commodities found for region {row['region_name']} (ID: {row['region_id']})")
+
     locations_mapped.extend(region_grouped['region_name'].tolist())
 
     for _, row in region_grouped.iterrows():
@@ -405,7 +466,7 @@ def main():
     st.sidebar.title("Map Controls")
     map_style = st.sidebar.selectbox("Map Style", ["OpenStreetMap", "CartoDB Positron", "Stamen Terrain"], index=1)
 
-    # Load data
+    # Load commodity data
     df = load_commodity_data()
     if df is None:
         return
@@ -457,15 +518,17 @@ def main():
     with col1:
         selected_year = st.selectbox("Select Year", years, index=len(years)-1)
     with col2:
-        month_names = {1: 'January', 2: 'February', 3: 'March', 4: 'April', 5: 'May', 6: 'June',
-                       7: 'July', 8: 'August', 9: 'September', 10: 'October', 11: 'November', 12: 'December'}
+        month_names = {
+            1: 'January', 2: 'February', 3: 'March', 4: 'April', 5: 'May', 6: 'June',
+            7: 'July', 8: 'August', 9: 'September', 10: 'October', 11: 'November', 12: 'December'
+        }
         month_options = [(m, month_names[m]) for m in months]
         selected_month = st.selectbox("Select Month", [m[1] for m in month_options], 
-                                      index=next((i for i, m in enumerate(month_options) if m[0] == 1), 0))
+                                      index=len(month_options)-1 if month_options else 0)
         selected_month_num = next(m[0] for m in month_options if m[1] == selected_month)
 
     # Generate and display map
-    st.subheader(f"Map for {month_names[selected_month_num]} {selected_year}")
+    st.subheader(f"Map for {selected_month} {selected_year}")
     map_obj, locations_mapped, filtered_df = generate_map(
         df, selected_year, selected_month_num, map_style, 
         travel_png_path, friction_png_path, image_bounds, markets, roads, selected_commodities
