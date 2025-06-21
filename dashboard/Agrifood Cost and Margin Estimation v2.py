@@ -60,7 +60,9 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
             'latitude', 'longitude', 'market', 'admin1', 'admin2', 'category', 'commodity_id',
             'priceflag', 'pricetype', 'currency', 'usdprice'
         ]
-        retail_df = df[retail_cols].drop_duplicates().groupby(['market_id', 'year', 'month', 'commodity_retail']).agg({
+        retail_df = df[df['commodity_retail'].notna()][retail_cols].drop_duplicates().groupby(
+            ['market_id', 'year', 'month', 'commodity_retail']
+        ).agg({
             'price_retail': 'mean',
             'unit_retail': 'first',
             'unit2_retail': 'first',
@@ -82,7 +84,9 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
             'region_id', 'year', 'month', 'commodity_farmgate_en', 'price_farmgate', 'unit_farmgate',
             'unit2_farmgate', 'region_latitude', 'region_longitude', 'region_name'
         ]
-        farmgate_df = df[farmgate_cols].drop_duplicates().groupby(['region_id', 'year', 'month', 'commodity_farmgate_en']).agg({
+        farmgate_df = df[df['commodity_farmgate_en'].notna()][farmgate_cols].drop_duplicates().groupby(
+            ['region_id', 'year', 'month', 'commodity_farmgate_en']
+        ).agg({
             'price_farmgate': 'mean',
             'unit_farmgate': 'first',
             'unit2_farmgate': 'first',
@@ -91,18 +95,26 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
             'region_name': 'first'
         }).reset_index()
 
-        # Merge with full join to preserve all data
+        # Combine for display, preserving all columns
         df = retail_df.merge(
             farmgate_df,
             on=['year', 'month'],
             how='outer',
-            suffixes=('_retail', '_farmgate')
+            suffixes=('', '_farmgate')
         )
+
+        # Rename columns to avoid suffix conflicts
+        if 'price_retail_farmgate' in df.columns:
+            df = df.rename(columns={'price_retail_farmgate': 'price_farmgate'})
+        if 'unit_retail_farmgate' in df.columns:
+            df = df.rename(columns={'unit_retail_farmgate': 'unit_farmgate'})
+        if 'unit2_retail_farmgate' in df.columns:
+            df = df.rename(columns={'unit2_retail_farmgate': 'unit2_farmgate'})
 
         # Check for duplicates after merging
         duplicates = df[df.duplicated(subset=['market_id', 'year', 'month', 'commodity_retail', 'region_id', 'commodity_farmgate_en'], keep=False)]
         if not duplicates.empty:
-            st.warning(f"Removed {len(duplicates)} duplicate entries after merging")
+            st.warning(f"Removed {len(duplicates)} duplicate entries after merging: {duplicates[['market_id', 'region_id', 'commodity_retail', 'commodity_farmgate_en']].to_dict('records')}")
             df = df.drop_duplicates(subset=['market_id', 'year', 'month', 'commodity_retail', 'region_id', 'commodity_farmgate_en'])
 
         # Check for invalid coordinates
@@ -114,10 +126,10 @@ def load_commodity_data(file_path='Senegal_Merged_Food_Prices.xlsx'):
             st.warning(f"Found {len(invalid_region_coords)} rows with invalid region coordinates")
 
         # Check for invalid prices
-        invalid_retail_prices = df[df['price_retail'].isna()]
+        invalid_retail_prices = df[df['price_retail'].isna() & df['commodity_retail'].notna()]
         if not invalid_retail_prices.empty:
             st.warning(f"Found {len(invalid_retail_prices)} rows with invalid retail prices")
-        invalid_farmgate_prices = df[df['price_farmgate'].isna()]
+        invalid_farmgate_prices = df[df['price_farmgate'].isna() & df['commodity_farmgate_en'].notna()]
         if not invalid_farmgate_prices.empty:
             st.warning(f"Found {len(invalid_farmgate_prices)} rows with invalid farmgate prices")
 
@@ -215,104 +227,118 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
         return m, locations_mapped, filtered_df
 
     # Process market-level (retail) data
-    market_grouped = filtered_df.groupby(['market', 'market_id', 'latitude', 'longitude', 'commodity_retail', 'year', 'month']).agg({
-        'price_retail': 'mean',
-        'unit2_retail': 'first'
-    }).reset_index()
-    market_grouped = market_grouped.groupby(['market', 'market_id', 'latitude', 'longitude']).agg({
-        'commodity_retail': list,
-        'price_retail': list,
-        'unit2_retail': list
-    }).reset_index()
-    market_grouped['commodity_count'] = market_grouped['commodity_retail'].apply(len)
+    retail_columns = ['market', 'market_id', 'latitude', 'longitude', 'commodity_retail', 'year', 'month', 'price_retail', 'unit2_retail']
+    available_retail_cols = [col for col in retail_columns if col in filtered_df.columns]
+    if not all(col in filtered_df.columns for col in ['market', 'market_id', 'latitude', 'longitude', 'commodity_retail']):
+        st.warning("Missing required retail columns in filtered data. Skipping retail processing.")
+    else:
+        market_grouped = filtered_df[available_retail_cols].groupby(
+            ['market', 'market_id', 'latitude', 'longitude', 'commodity_retail', 'year', 'month']
+        ).agg({
+            'price_retail': 'mean' if 'price_retail' in available_retail_cols else lambda x: np.nan,
+            'unit2_retail': 'first' if 'unit2_retail' in available_retail_cols else lambda x: 'Unknown'
+        }).reset_index()
+        market_grouped = market_grouped.groupby(['market', 'market_id', 'latitude', 'longitude']).agg({
+            'commodity_retail': list,
+            'price_retail': list,
+            'unit2_retail': list
+        }).reset_index()
+        market_grouped['commodity_count'] = market_grouped['commodity_retail'].apply(len)
 
-    # Check for duplicate commodities in market_grouped
-    for _, row in market_grouped.iterrows():
-        unique_commodities = set(row['commodity_retail'])
-        if len(unique_commodities) < len(row['commodity_retail']):
-            st.warning(f"Duplicate retail commodities found for market {row['market']} (ID: {row['market_id']}): {row['commodity_retail']}")
+        # Check for duplicate commodities in market_grouped
+        for _, row in market_grouped.iterrows():
+            unique_commodities = set(row['commodity_retail'])
+            if len(unique_commodities) < len(row['commodity_retail']):
+                st.warning(f"Duplicate retail commodities found for market {row['market']} (ID: {row['market_id']}): {row['commodity_retail']}")
 
-    locations_mapped.extend(market_grouped['market'].tolist())
+        locations_mapped.extend(market_grouped['market'].tolist())
 
-    for _, row in market_grouped.iterrows():
-        if pd.isna(row['latitude']) or pd.isna(row['longitude']):
-            continue
-        commodity_count = row['commodity_count']
-        commodity_details = [
-            f"{commodity}: {price:.2f} {unit}" if not pd.isna(price) else f"{commodity}: Price not available"
-            for commodity, price, unit in zip(row['commodity_retail'], row['price_retail'], row['unit2_retail'])
-        ]
-        commodity_list = '<br>'.join(commodity_details)
-        popup_content = f"""
-        <div style='width: 250px'>
-            <h4>{row['market']} (Market)</h4>
-            <b>Market ID:</b> {row['market_id']}<br>
-            <b>Retail Commodities ({commodity_count}):</b><br>{commodity_list}<br>
-            <b>Coordinates:</b> {row['latitude']:.4f}, {row['longitude']:.4f}
-        </div>
-        """
-        folium.CircleMarker(
-            location=[row['latitude'], row['longitude']],
-            radius=6 + (commodity_count * 1.5),
-            popup=folium.Popup(popup_content, max_width=300),
-            tooltip=f"{row['market']}: {commodity_count} retail commodities (Market)",
-            fill=True,
-            fill_color='green',
-            color='green',
-            fill_opacity=0.7
-        ).add_to(folium.FeatureGroup(name="Market Retail Commodities").add_to(m))
+        for _, row in market_grouped.iterrows():
+            if pd.isna(row['latitude']) or pd.isna(row['longitude']):
+                continue
+            commodity_count = row['commodity_count']
+            commodity_details = [
+                f"{commodity}: {price:.2f} {unit}" if not pd.isna(price) else f"{commodity}: Price not available"
+                for commodity, price, unit in zip(row['commodity_retail'], row['price_retail'], row['unit2_retail'])
+            ]
+            commodity_list = '<br>'.join(commodity_details)
+            popup_content = f"""
+            <div style='width: 250px'>
+                <h4>{row['market']} (Market)</h4>
+                <b>Market ID:</b> {row['market_id']}<br>
+                <b>Retail Commodities ({commodity_count}):</b><br>{commodity_list}<br>
+                <b>Coordinates:</b> {row['latitude']:.4f}, {row['longitude']:.4f}
+            </div>
+            """
+            folium.CircleMarker(
+                location=[row['latitude'], row['longitude']],
+                radius=6 + (commodity_count * 1.5),
+                popup=folium.Popup(popup_content, max_width=300),
+                tooltip=f"{row['market']}: {commodity_count} retail commodities (Market)",
+                fill=True,
+                fill_color='green',
+                color='green',
+                fill_opacity=0.7
+            ).add_to(folium.FeatureGroup(name="Market Retail Commodities").add_to(m))
 
     # Process region-level (farmgate) data
-    region_grouped = filtered_df.groupby(['region_id', 'commodity_farmgate_en', 'year', 'month']).agg({
-        'price_farmgate': 'mean',
-        'unit2_farmgate': 'first',
-        'region_latitude': 'first',
-        'region_longitude': 'first',
-        'region_name': 'first'
-    }).reset_index()
-    region_grouped = region_grouped.groupby(['region_name', 'region_id', 'region_latitude', 'region_longitude']).agg({
-        'commodity_farmgate_en': list,
-        'price_farmgate': list,
-        'unit2_farmgate': list
-    }).reset_index()
-    region_grouped['commodity_count'] = region_grouped['commodity_farmgate_en'].apply(len)
+    farmgate_columns = ['region_id', 'commodity_farmgate_en', 'year', 'month', 'price_farmgate', 'unit2_farmgate', 'region_latitude', 'region_longitude', 'region_name']
+    available_farmgate_cols = [col for col in farmgate_columns if col in filtered_df.columns]
+    if not all(col in filtered_df.columns for col in ['region_id', 'commodity_farmgate_en', 'region_name']):
+        st.warning("Missing required farmgate columns in filtered data. Skipping farmgate processing.")
+    else:
+        region_grouped = filtered_df[available_farmgate_cols].groupby(
+            ['region_id', 'commodity_farmgate_en', 'year', 'month']
+        ).agg({
+            'price_farmgate': 'mean' if 'price_farmgate' in available_farmgate_cols else lambda x: np.nan,
+            'unit2_farmgate': 'first' if 'unit2_farmgate' in available_farmgate_cols else lambda x: 'Unknown',
+            'region_latitude': 'first' if 'region_latitude' in available_farmgate_cols else lambda x: np.nan,
+            'region_longitude': 'first' if 'region_longitude' in available_farmgate_cols else lambda x: np.nan,
+            'region_name': 'first'
+        }).reset_index()
+        region_grouped = region_grouped.groupby(['region_name', 'region_id', 'region_latitude', 'region_longitude']).agg({
+            'commodity_farmgate_en': list,
+            'price_farmgate': list,
+            'unit2_farmgate': list
+        }).reset_index()
+        region_grouped['commodity_count'] = region_grouped['commodity_farmgate_en'].apply(len)
 
-    # Check for duplicate commodities in region_grouped
-    for _, row in region_grouped.iterrows():
-        unique_commodities = set(row['commodity_farmgate_en'])
-        if len(unique_commodities) < len(row['commodity_farmgate_en']):
-            st.warning(f"Duplicate farmgate commodities found for region {row['region_name']} (ID: {row['region_id']}): {row['commodity_farmgate_en']}")
+        # Check for duplicate commodities in region_grouped
+        for _, row in region_grouped.iterrows():
+            unique_commodities = set(row['commodity_farmgate_en'])
+            if len(unique_commodities) < len(row['commodity_farmgate_en']):
+                st.warning(f"Duplicate farmgate commodities found for region {row['region_name']} (ID: {row['region_id']}): {row['commodity_farmgate_en']}")
 
-    locations_mapped.extend(region_grouped['region_name'].tolist())
+        locations_mapped.extend(region_grouped['region_name'].tolist())
 
-    for _, row in region_grouped.iterrows():
-        if pd.isna(row['region_latitude']) or pd.isna(row['region_longitude']):
-            continue
-        commodity_count = row['commodity_count']
-        color = 'blue' if commodity_count < 5 else 'orange' if commodity_count < 10 else 'red'
-        commodity_details = [
-            f"{commodity}: {price:.2f} {unit}" if not pd.isna(price) else f"{commodity}: Price not available"
-            for commodity, price, unit in zip(row['commodity_farmgate_en'], row['price_farmgate'], row['unit2_farmgate'])
-        ]
-        commodity_list = '<br>'.join(commodity_details)
-        popup_content = f"""
-        <div style='width: 250px'>
-            <h4>{row['region_name']} (Region)</h4>
-            <b>Region ID:</b> {row['region_id']}<br>
-            <b>Farmgate Commodities ({commodity_count}):</b><br>{commodity_list}<br>
-            <b>Coordinates:</b> {row['region_latitude']:.4f}, {row['region_longitude']:.4f}
-        </div>
-        """
-        folium.CircleMarker(
-            location=[row['region_latitude'], row['region_longitude']],
-            radius=8 + (commodity_count * 2),
-            popup=folium.Popup(popup_content, max_width=300),
-            tooltip=f"{row['region_name']}: {commodity_count} farmgate commodities (Region)",
-            fill=True,
-            fill_color=color,
-            color=color,
-            fill_opacity=0.7
-        ).add_to(folium.FeatureGroup(name="Region Farmgate Commodities").add_to(m))
+        for _, row in region_grouped.iterrows():
+            if pd.isna(row['region_latitude']) or pd.isna(row['region_longitude']):
+                continue
+            commodity_count = row['commodity_count']
+            color = 'blue' if commodity_count < 5 else 'orange' if commodity_count < 10 else 'red'
+            commodity_details = [
+                f"{commodity}: {price:.2f} {unit}" if not pd.isna(price) else f"{commodity}: Price not available"
+                for commodity, price, unit in zip(row['commodity_farmgate_en'], row['price_farmgate'], row['unit2_farmgate'])
+            ]
+            commodity_list = '<br>'.join(commodity_details)
+            popup_content = f"""
+            <div style='width: 250px'>
+                <h4>{row['region_name']} (Region)</h4>
+                <b>Region ID:</b> {row['region_id']}<br>
+                <b>Farmgate Commodities ({commodity_count}):</b><br>{commodity_list}<br>
+                <b>Coordinates:</b> {row['region_latitude']:.4f}, {row['region_longitude']:.4f}
+            </div>
+            """
+            folium.CircleMarker(
+                location=[row['region_latitude'], row['region_longitude']],
+                radius=8 + (commodity_count * 2),
+                popup=folium.Popup(popup_content, max_width=300),
+                tooltip=f"{row['region_name']}: {commodity_count} farmgate commodities (Region)",
+                fill=True,
+                fill_color=color,
+                color=color,
+                fill_opacity=0.7
+            ).add_to(folium.FeatureGroup(name="Region Farmgate Commodities").add_to(m))
 
     # Add raster overlays
     if travel_png_path and image_bounds:
@@ -421,7 +447,7 @@ def generate_map(df, year, month, map_style, travel_png_path, friction_png_path,
       <div style="background:#ff0000;width:20px;height:20px;display:inline-block;"></div> ≥10 Commodities
     </div>
     </div>
-    {% macro %}
+    {% endmacro %}
     """
     commodity_legend = MacroElement()
     commodity_legend._template = Template(commodity_legend_html)
@@ -557,16 +583,25 @@ def main():
         # Display commodity details
         if not filtered_df.empty:
             st.subheader("Commodity Details")
-            display_df = filtered_df[[
-                'market', 'commodity_retail', 'price_retail', 'unit2_retail',
-                'region_name', 'commodity_farmgate_en', 'price_farmgate', 'unit2_farmgate'
-            ]].copy()
-            display_df['price_retail'] = display_df['price_retail'].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "N/A")
-            display_df['price_farmgate'] = display_df['price_farmgate'].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "N/A")
-            display_df = display_df.sort_values(['market', 'region_name', 'commodity_retail'])
-            st.dataframe(display_df, use_container_width=True)
-            csv = display_df.to_csv(index=False)
-            st.download_button("Download Commodity Data", csv, "commodity_data.csv", "text/csv")
+            # Select available columns for display
+            display_columns = [
+                col for col in [
+                    'market', 'commodity_retail', 'price_retail', 'unit2_retail',
+                    'region_name', 'commodity_farmgate_en', 'price_farmgate', 'unit2_farmgate'
+                ] if col in filtered_df.columns
+            ]
+            if not display_columns:
+                st.warning("No valid columns available for commodity details table.")
+            else:
+                display_df = filtered_df[display_columns].copy()
+                if 'price_retail' in display_df.columns:
+                    display_df['price_retail'] = display_df['price_retail'].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "N/A")
+                if 'price_farmgate' in display_df.columns:
+                    display_df['price_farmgate'] = display_df['price_farmgate'].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "N/A")
+                display_df = display_df.sort_values(['market', 'region_name', 'commodity_retail'], na_position='last')
+                st.dataframe(display_df, use_container_width=True)
+                csv = display_df.to_csv(index=False)
+                st.download_button("Download Commodity Data", csv, "commodity_data.csv", "text/csv")
     else:
         st.write("Unable to generate map due to missing data.")
 
