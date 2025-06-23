@@ -24,10 +24,10 @@ prices_path = os.path.join(BASE_DIR, 'merged_farmgate_retail_prices_senegal.xlsx
 # -------------------------------
 # Helper Function: RGB Conversion
 # -------------------------------
-def assign_colors(data, breaks, colors):
-    """Convert raster data to RGB image based on breakpoints and colors."""
+def generate_colors(data, breaks, colors):
+    """Convert raster data to RGB image based on specified colors."""
     rgb = np.zeros((data.shape[0], data.shape[1], 3), dtype=np.uint8)
-    for i in range(len(breaks) - 1):
+    for i in range(len(breaks) -1):
         mask = (data >= breaks[i]) & (data < breaks[i + 1])
         rgb[mask] = colors[i]
     return rgb
@@ -39,7 +39,7 @@ st.set_page_config(page_title="Senegal Agrifood Geospatial Analysis", layout="wi
 st.title("Senegal Agrifood Geospatial Analysis")
 st.markdown("""
 This app visualizes travel time to cities, friction surfaces, farmgate prices, retail prices, markets, and roads in Senegal.
-Use the sidebar to select year, month, and commodities for price data and toggle map layers.
+Use the sidebar to select year, month, and commodities to filter price data and toggle map layers.
 """)
 
 # -------------------------------
@@ -227,7 +227,7 @@ colors = [
     (189, 0, 38),     # #bd0026
     (128, 0, 38)      # overflow
 ]
-rgb = assign_colors(data, breaks, colors)
+rgb = generate_colors(data, breaks, colors)
 travel_png_path = 'travel_time_colored.png'
 Image.fromarray(rgb).save(travel_png_path)
 travel_image_bounds = [[travel_bounds.bottom, travel_bounds.left], [travel_bounds.top, travel_bounds.right]]
@@ -246,7 +246,7 @@ friction_colors = [
     (165, 0, 38),    # #a50026
     (128, 0, 38)     # overflow
 ]
-rgb_friction = assign_colors(friction_data, friction_breaks, friction_colors)
+rgb_friction = generate_colors(friction_data, friction_breaks, friction_colors)
 friction_png_path = 'friction_surface_colored.png'
 Image.fromarray(rgb_friction).save(friction_png_path)
 friction_image_bounds = [[friction_bounds.bottom, friction_bounds.left], [friction_bounds.top, friction_bounds.right]]
@@ -310,7 +310,6 @@ for _, row in latest_farmgate_prices.iterrows():
         icon=folium.Icon(color='green', icon='tractor', prefix='fa')
     ).add_to(farmgate_group)
     farmgate_marker_count += 1
-st.info(f"Added {farmgate_marker_count} farmgate price markers to the map")
 farmgate_group.add_to(m)
 
 # Add Retail Prices Layer
@@ -332,7 +331,6 @@ for _, row in latest_retail_prices.iterrows():
         icon=folium.Icon(color='purple', icon='shopping-basket', prefix='fa')
     ).add_to(retail_group)
     retail_marker_count += 1
-st.info(f"Added {retail_marker_count} retail price markers to the map")
 retail_group.add_to(m)
 
 # Add Raster Overlays
