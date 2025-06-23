@@ -273,6 +273,7 @@ def main():
         if not commodity_options:
             st.error("No commodities found in both farmgate and retail datasets with common commodity IDs. Please check your data.")
             st.stop()
+
         # Display commodity names but store IDs
         selected_commodity_ids = st.sidebar.multiselect(
             "Select Commodities",
@@ -293,7 +294,7 @@ def main():
         show_retail = st.sidebar.checkbox("Retail Prices", value=True)
 
         # Update map data
-        if st.session_state.map_data_updated or not st.session_state.latest_farmgate_prices.empty or not st.session_state.latest_retail_prices.empty:
+        if st.session_state.map_data_updated or st.session_state.latest_farmgate_prices.empty or st.session_state.latest_retail_prices.empty:
             latest_farmgate_prices = pd.DataFrame()
             latest_retail_prices = pd.DataFrame()
             if not prices_df.empty:
@@ -444,8 +445,7 @@ def main():
                 <div style="background:#fdae61;width:20px;height:20px;display:inline-block;"></div> ≤ 1.0<br>
                 <div style="background:#f46d43;width:20px;height:20px;display:inline-block;"></div> ≤ 2.0<br>
                 <div style="background:#a50026;width:20px;height:20px;display:inline-block;"></div> ≤ 5.0<br>
-                <div style="background:#800026;width:20competition; width:20px;height:25px;display:inline;">
-                </div>
+                <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> > 5.0</div></div>
                 {% endmacro %}
                 """
                 friction_legend = MacroElement()
@@ -557,10 +557,10 @@ def main():
                         template="plotly_white",
                         xaxis=dict(showgrid=True, gridcolor='rgba(200,200,200,0.2)'),
                         yaxis=dict(showgrid=True, gridcolor='rgba(200,200,200,0.2)')
-                    ))
+                    )
                     st.plotly_chart(fig, use_container_width=True)
             except Exception as e:
-                st.error(f"f"Failed to generate price trends: {e}").st.stop()
+                st.error(f"Failed to generate price trends: {e}")
         else:
             st.warning("No data available for price trends. Please check your data.")
 
