@@ -165,6 +165,7 @@ def main():
     .stSelectbox, .stMultiselect { background-color: #f3f4f6; border-radius: 8px; }
     .header { background-color: #1e3a8a; color: white; padding: 20px; border-radius: 8px; }
     .footer { background-color: #1e3a8a; color: white; padding: 10px; text-align: center; margin-top: 20px; }
+    .stApp [data-testid="stMapContainer"] { margin-top: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -450,7 +451,7 @@ def main():
             if show_travel:
                 travel_legend_html = """
                 {% macro html(this, kwargs) %}
-                <div style="position: fixed; bottom: 5%; left: 2%; width: 180px; height: 230px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
+                <div style="position: fixed; bottom: 2%; left: 2%; width: 180px; height: 230px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
                 <b>Travel Time (min)</b><br><div style="margin-top:10px;">
                 <div style="background:#ffffcc;width:20px;height:20px;display:inline-block;"></div> 0–10<br>
                 <div style="background:#ffeda0;width:20px;height:20px;display:inline-block;"></div> 10–30<br>
@@ -468,7 +469,7 @@ def main():
             if show_friction:
                 friction_legend_html = """
                 {% macro html(this, kwargs) %}
-                <div style="position: fixed; bottom: 5%; right: 2%; width: 200px; height: 260px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
+                <div style="position: fixed; bottom: 2%; right: 2%; width: 200px; height: 260px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
                 <b>Friction (min/m)</b><br><div style="margin-top:10px;">
                 <div style="background:#006837;width:20px;height:20px;display:inline-block;"></div> ≤ 0.001<br>
                 <div style="background:#31a354;width:20px;height:20px;display:inline-block;"></div> ≤ 0.01<br>
