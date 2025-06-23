@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 import folium
-from folium.plugins import MarkerCluster, MiniMap
+from folium.plugins import MarkerCluster, MiniMap, Fullscreen
 import streamlit as st
 from streamlit_folium import st_folium
 from branca.element import Template, MacroElement
@@ -56,7 +56,7 @@ def generate_colors(data, breaks, colors):
 # Load and Process Rasters
 # -------------------------------
 @st.cache_data(hash_funcs={np.ma.MaskedArray: lambda x: hash((x.data.tobytes(), x.mask.tobytes()))})
-def load_and_process_raster(file_path, downsample_factor=4):
+def load_and_process_raster(file_path, downsample_factor=2):
     try:
         with rasterio.open(file_path) as src:
             data = src.read(1, out_shape=(1, src.height // downsample_factor, src.width // downsample_factor), resampling=rasterio.enums.Resampling.bilinear)
@@ -119,6 +119,10 @@ def load_price_data(file_path):
         prices_df['Year'] = pd.to_numeric(prices_df['Year'], errors='coerce')
         prices_df['Month'] = pd.to_numeric(prices_df['Month'], errors='coerce')
         prices_df = prices_df.dropna(subset=['Price', 'Year', 'Month', 'Régions - Latitude', 'Régions - Longitude', 'commodity_id'])
+        # Validate year range
+        if not prices_df.empty and (prices_df['Year'] < 2016).any() or (prices_df['Year'] > 2025).any():
+            st.warning("Farmgate data contains years outside 2016–2025. Invalid years will be filtered.")
+            prices_df = prices_df[prices_df['Year'].between(2016, 2025)]
         return prices_df
     except Exception as e:
         st.error(f"Error reading farmgate prices file {file_path}: {e}")
@@ -137,6 +141,10 @@ def load_retail_data(file_path):
         retail_df['Year'] = pd.to_numeric(retail_df['Year'], errors='coerce')
         retail_df['Month'] = pd.to_numeric(retail_df['Month'], errors='coerce')
         retail_df = retail_df.dropna(subset=['Price', 'Year', 'Month', 'latitude', 'longitude', 'commodity_id'])
+        # Validate year range
+        if not retail_df.empty and (retail_df['Year'] < 2016).any() or (retail_df['Year'] > 2025).any():
+            st.warning("Retail data contains years outside 2016–2025. Invalid years will be filtered.")
+            retail_df = retail_df[retail_df['Year'].between(2016, 2025)]
         return retail_df
     except Exception as e:
         st.error(f"Error reading retail prices file {file_path}: {e}")
@@ -213,7 +221,7 @@ def main():
 
     if travel_time is None or friction_data is None:
         st.error("Failed to load raster data. Please check the files and try again.")
-        return
+        st.stop()
 
     # Generate raster images
     travel_png_path, travel_image_bounds = generate_travel_image(travel_time, travel_bounds)
@@ -238,19 +246,16 @@ def main():
 
         # Filter controls
         st.sidebar.header("Map Filters")
-        common_years = sorted(list(set(prices_df['Year']).intersection(set(retail_df['Year'])))) if not prices_df.empty and not retail_df.empty else []
-        if not common_years:
-            st.error("No common years found between farmgate and retail data. Please upload a valid Excel file.")
-            return
-        latest_year = max(common_years) if common_years else None
-        selected_year = st.sidebar.selectbox("Select Year", common_years, index=common_years.index(latest_year) if latest_year else 0, key="year_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
+        # Hardcode years 2016–2025
+        available_years = list(range(2016, 2026))
+        selected_year = st.sidebar.selectbox("Select Year", available_years, index=len(available_years)-1, key="year_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
 
         month_names = {1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
                        7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"}
-        available_months = sorted(list(set(prices_df['Month'].unique()) | set(retail_df['Month'].unique()))) if not prices_df.empty or not retail_df.empty else []
-        latest_month = max(available_months) if available_months else None
-        selected_month_name = st.sidebar.selectbox("Select Month", [month_names.get(m, str(m)) for m in available_months], index=available_months.index(latest_month) if latest_month else 0, key="month_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
-        selected_month = next((k for k, v in month_names.items() if v == selected_month_name), selected_month_name) if selected_month_name else None
+        available_months = sorted(list(set(prices_df['Month'].unique()) | set(retail_df['Month'].unique()))) if not prices_df.empty or not retail_df.empty else list(range(1, 13))
+        latest_month = max(available_months) if available_months else 12
+        selected_month_name = st.sidebar.selectbox("Select Month", [month_names.get(m, str(m)) for m in available_months], index=available_months.index(latest_month) if latest_month in available_months else 0, key="month_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
+        selected_month = next((k for k, v in month_names.items() if v == selected_month_name), selected_month_name)
 
         # Filter commodities to those present in both farmgate and retail based on commodity_id
         commodity_options = []
@@ -261,14 +266,13 @@ def main():
             common_commodity_ids = farmgate_commodities.intersection(retail_commodities)
             # Map commodity_id to commodity_english for display
             for cid in common_commodity_ids:
-                # Prefer commodity_english from farmgate for display
                 name = prices_df[prices_df['commodity_id'] == cid]['commodity_english'].iloc[0] if cid in prices_df['commodity_id'].values else retail_df[retail_df['commodity_id'] == cid]['commodity'].iloc[0]
                 commodity_options.append(cid)
                 commodity_id_to_name[cid] = name
             commodity_options = sorted(commodity_options, key=lambda x: commodity_id_to_name[x])
         if not commodity_options:
             st.error("No commodities found in both farmgate and retail datasets with common commodity IDs. Please check your data.")
-            return
+            st.stop()
         # Display commodity names but store IDs
         selected_commodity_ids = st.sidebar.multiselect(
             "Select Commodities",
@@ -326,7 +330,7 @@ def main():
         try:
             center_lat = (travel_bounds[1] + travel_bounds[3]) / 2
             center_lon = (travel_bounds[0] + travel_bounds[2]) / 2
-            m = folium.Map(location=[center_lat, center_lon], zoom_start=7, tiles="CartoDB Positron")
+            m = folium.Map(location=[center_lat, center_lon], zoom_start=8, tiles="CartoDB Positron")
 
             # Add Roads Layer
             if show_roads and roads_filtered:
@@ -440,21 +444,23 @@ def main():
                 <div style="background:#fdae61;width:20px;height:20px;display:inline-block;"></div> ≤ 1.0<br>
                 <div style="background:#f46d43;width:20px;height:20px;display:inline-block;"></div> ≤ 2.0<br>
                 <div style="background:#a50026;width:20px;height:20px;display:inline-block;"></div> ≤ 5.0<br>
-                <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> > 5.0</div></div>
+                <div style="background:#800026;width:20competition; width:20px;height:25px;display:inline;">
+                </div>
                 {% endmacro %}
                 """
                 friction_legend = MacroElement()
                 friction_legend._template = Template(friction_legend_html)
                 m.get_root().add_child(friction_legend)
 
-            # Add MiniMap
+            # Add MiniMap and Fullscreen
             MiniMap(tiles='OpenStreetMap', position='bottomleft').add_to(m)
+            Fullscreen(position='topright', title='Expand', title_cancel='Exit').add_to(m)
 
             folium.LayerControl(collapsed=False).add_to(m)
             with st.spinner("Rendering map..."):
-                st_folium(m, width=1200, height=600, key="folium_map")
+                st_folium(m, width=1400, height=800, key="folium_map")
         except Exception as e:
-            st.error(f"Failed to render map: {e}. Please check data or try different filters.")
+            st.error(f"Failed to render map: {e}. Please check data or coordinates.")
 
     with tab2:
         st.subheader("Data Summary")
@@ -551,10 +557,10 @@ def main():
                         template="plotly_white",
                         xaxis=dict(showgrid=True, gridcolor='rgba(200,200,200,0.2)'),
                         yaxis=dict(showgrid=True, gridcolor='rgba(200,200,200,0.2)')
-                    )
+                    ))
                     st.plotly_chart(fig, use_container_width=True)
             except Exception as e:
-                st.error(f"Failed to generate price trends: {e}")
+                st.error(f"f"Failed to generate price trends: {e}").st.stop()
         else:
             st.warning("No data available for price trends. Please check your data.")
 
