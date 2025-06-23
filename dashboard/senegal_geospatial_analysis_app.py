@@ -75,7 +75,38 @@ except rasterio.errors.RasterioIOError as e:
 # Mask nodata values
 data = np.ma.masked_equal(travel_time, nodata) if nodata is not None else np.ma.masked_invalid(travel_time)
 
+# -------------------------------
+# 2. Summary Statistics
+# -------------------------------
+with st.expander("Travel Time Summary Statistics"):
+    st.write(f"**Min:** {data.min():.2f} min")
+    st.write(f"**Max:** {data.max():.2f} min")
+    st.write(f"**Mean:** {data.mean():.2f} min")
+    st.write(f"**Std Dev:** {data.std():.2f} min")
 
+# -------------------------------
+# 3. Percentiles
+# -------------------------------
+percentiles = np.percentile(data.compressed(), [5, 25, 50, 75, 95])
+with st.expander("Travel Time Percentiles"):
+    st.write(f"**5th:** {percentiles[0]:.2f} min")
+    st.write(f"**25th:** {percentiles[1]:.2f} min")
+    st.write(f"**50th (median):** {percentiles[2]:.2f} min")
+    st.write(f"**75th:** {percentiles[3]:.2f} min")
+    st.write(f"**95th:** {percentiles[4]:.2f} min")
+
+# -------------------------------
+# 4. Histogram
+# -------------------------------
+st.subheader("Histogram of Travel Time to Cities")
+fig, ax = plt.subplots(figsize=(10, 5))
+ax.hist(data.compressed(), bins=50, color='skyblue', edgecolor='black')
+ax.set_title('Histogram of Travel Time to Cities (min)')
+ax.set_xlabel('Travel Time (minutes)')
+ax.set_ylabel('Count')
+ax.grid(True)
+plt.tight_layout()
+st.pyplot(fig)
 
 # -------------------------------
 # 5. Load and Process Friction Raster
@@ -98,8 +129,8 @@ try:
     markets = gpd.read_file(markets_path)
     if markets.empty:
         st.warning("Markets GeoJSON is empty")
-    roads = gpd.read_file(roads_filtered_path)
-    if roads.empty():
+    roads_filtered = gpd.read_file(roads_filtered_path)
+    if roads_filtered.empty:
         st.warning("Roads GeoJSON is empty")
 except Exception as e:
     st.error(f"Error reading GeoJSON files: {e}")
@@ -256,7 +287,7 @@ m = folium.Map(location=[center_lat, center_lon], zoom_start=7, tiles="CartoDB P
 
 # Add Roads Layer
 folium.GeoJson(
-    roads,
+    roads_filtered,
     name="Roads",
     style_function=lambda x: {
         'color': 'blue',
