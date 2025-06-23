@@ -93,14 +93,59 @@ def generate_friction_image(data, bounds):
 # Load GeoJSON Files
 # -------------------------------
 @st.cache_data
-def load_geojson(file_path):
+def load_geojson(file_path, max_features=500, is_roads=False):
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         if data.get('type') != 'FeatureCollection':
             st.warning(f"{file_path} is not a valid FeatureCollection")
             return None
-        return data
+        features = data.get('features', [])
+        valid_features = []
+        invalid_count = 0
+        # Validate and filter features
+        for feature in features:
+            try:
+                geom = feature.get('geometry', {})
+                if not geom or 'coordinates' not in geom:
+                    invalid_count += 1
+                    continue
+                # Basic coordinate validation
+                coords = geom['coordinates']
+                if geom['type'] == 'Point':
+                    if not (isinstance(coords, list) and len(coords) == 2 and all(isinstance(c, (int, float)) for c in coords)):
+                        invalid_count += 1
+                        continue
+                    if not (-180 <= coords[0] <= 180 and -90 <= coords[1] <= 90):
+                        invalid_count += 1
+                        continue
+                elif geom['type'] in ['LineString', 'MultiLineString']:
+                    # Skip complex validation for LineString, just check basic structure
+                    if geom['type'] == 'LineString' and not all(isinstance(c, list) and len(c) == 2 for c in coords):
+                        invalid_count += 1
+                        continue
+                else:
+                    invalid_count += 1
+                    continue
+                # For roads, prioritize major types if available
+                if is_roads and 'properties' in feature:
+                    highway = feature['properties'].get('highway', '')
+                    # Include only major roads if highway property exists
+                    if highway and highway not in ['motorway', 'trunk', 'primary', 'secondary']:
+                        continue
+                valid_features.append(feature)
+            except Exception:
+                invalid_count += 1
+                continue
+        if invalid_count > 0:
+            st.warning(f"Skipped {invalid_count} invalid features in {file_path}")
+        # Limit features
+        if len(valid_features) > max_features:
+            st.warning(f"GeoJSON file {file_path} has {len(valid_features)} valid features. Limiting to {max_features} for performance.")
+            valid_features = valid_features[:max_features]
+        data['features'] = valid_features
+        st.info(f"Loaded {len(valid_features)} features from {file_path}")
+        return data if valid_features else None
     except Exception as e:
         st.warning(f"Failed to load {file_path}: {e}")
         return None
@@ -115,12 +160,10 @@ def load_price_data(file_path):
         if prices_df.empty:
             st.warning("Farmgate prices Excel is empty")
             return pd.DataFrame()
-        # Ensure numeric types for critical columns
         prices_df['Price'] = pd.to_numeric(prices_df['Price'], errors='coerce')
         prices_df['Year'] = pd.to_numeric(prices_df['Year'], errors='coerce')
         prices_df['Month'] = pd.to_numeric(prices_df['Month'], errors='coerce')
         prices_df = prices_df.dropna(subset=['Price', 'Year', 'Month', 'Régions - Latitude', 'Régions - Longitude', 'commodity_id'])
-        # Validate year range
         if not prices_df.empty and (prices_df['Year'] < 2016).any() or (prices_df['Year'] > 2025).any():
             st.warning("Farmgate data contains years outside 2016–2025. Invalid years will be filtered.")
             prices_df = prices_df[prices_df['Year'].between(2016, 2025)]
@@ -136,13 +179,11 @@ def load_retail_data(file_path):
         if retail_df.empty:
             st.warning("Retail prices Excel is empty")
             return pd.DataFrame()
-        # Standardize column names and ensure numeric types
         retail_df = retail_df.rename(columns={'price': 'Price'})
         retail_df['Price'] = pd.to_numeric(retail_df['Price'], errors='coerce')
         retail_df['Year'] = pd.to_numeric(retail_df['Year'], errors='coerce')
         retail_df['Month'] = pd.to_numeric(retail_df['Month'], errors='coerce')
         retail_df = retail_df.dropna(subset=['Price', 'Year', 'Month', 'latitude', 'longitude', 'commodity_id'])
-        # Validate year range
         if not retail_df.empty and (retail_df['Year'] < 2016).any() or (retail_df['Year'] > 2025).any():
             st.warning("Retail data contains years outside 2016–2025. Invalid years will be filtered.")
             retail_df = retail_df[retail_df['Year'].between(2016, 2025)]
@@ -166,7 +207,7 @@ def main():
     .stSelectbox, .stMultiselect { background-color: #f3f4f6; border-radius: 8px; }
     .header { background-color: #1e3a8a; color: white; padding: 20px; border-radius: 8px; }
     .footer { background-color: #1e3a8a; color: white; padding: 10px; text-align: center; margin-top: 20px; }
-    .stApp [data-testid="stMapContainer"] { margin-top: 10px; }
+    .stApp [data-testid="stMapContainer"] { margin-top: 10px; min-height: 600px; }
     .legend-container { background-color: white; border: 2px solid grey; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3); margin-top: 10px; }
     .legend-title { font-weight: bold; font-size: 14px; margin-bottom: 10px; }
     .legend-item { display: flex; align-items: center; margin-bottom: 5px; font-size: 14px; }
@@ -219,7 +260,7 @@ def main():
         progress.progress(0.4)
         markets = load_geojson(st.session_state.file_paths['markets'])
         progress.progress(0.6)
-        roads_filtered = load_geojson(st.session_state.file_paths['roads'])
+        roads_filtered = load_geojson(st.session_state.file_paths['roads'], max_features=500, is_roads=True)
         progress.progress(0.8)
         prices_df = load_price_data(st.session_state.file_paths['prices'])
         retail_df = load_retail_data(st.session_state.file_paths['prices'])
@@ -249,10 +290,10 @@ def main():
     with tab1:
         st.subheader("Interactive Map")
         st.markdown("Explore travel time, friction surfaces, market locations, road networks, and commodity prices.")
+        st.info("Map view is fixed. Pan or zoom to explore all data. Roads layer may load slowly due to data complexity.")
 
         # Filter controls
         st.sidebar.header("Map Filters")
-        # Hardcode years 2016–2025
         available_years = list(range(2016, 2026))
         selected_year = st.sidebar.selectbox("Select Year", available_years, index=len(available_years)-1, key="year_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
 
@@ -263,14 +304,13 @@ def main():
         selected_month_name = st.sidebar.selectbox("Select Month", [month_names.get(m, str(m)) for m in available_months], index=available_months.index(latest_month) if latest_month in available_months else 0, key="month_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
         selected_month = next((k for k, v in month_names.items() if v == selected_month_name), selected_month_name)
 
-        # Filter commodities to those present in both farmgate and retail based on commodity_id
+        # Filter commodities
         commodity_options = []
         commodity_id_to_name = {}
         if not prices_df.empty and not retail_df.empty:
             farmgate_commodities = set(prices_df['commodity_id'].unique())
             retail_commodities = set(retail_df['commodity_id'].unique())
             common_commodity_ids = farmgate_commodities.intersection(retail_commodities)
-            # Map commodity_id to commodity_english for display
             for cid in common_commodity_ids:
                 name = prices_df[prices_df['commodity_id'] == cid]['commodity_english'].iloc[0] if cid in prices_df['commodity_id'].values else retail_df[retail_df['commodity_id'] == cid]['commodity'].iloc[0]
                 commodity_options.append(cid)
@@ -279,7 +319,6 @@ def main():
         if not commodity_options:
             st.error("No commodities found in both farmgate and retail datasets with common commodity IDs. Please check your data.")
             st.stop()
-        # Display commodity names but store IDs
         selected_commodity_ids = st.sidebar.multiselect(
             "Select Commodities",
             options=commodity_options,
@@ -314,7 +353,6 @@ def main():
                 if len(latest_farmgate_prices) > 500:
                     latest_farmgate_prices = latest_farmgate_prices.head(500)
                     st.warning("Limited to 500 farmgate price markers for performance.")
-
             if not retail_df.empty:
                 filtered_retail = retail_df[retail_df['Year'] == selected_year] if selected_year else retail_df
                 if selected_month:
@@ -322,7 +360,6 @@ def main():
                 filtered_retail['Date'] = pd.to_datetime(filtered_retail[['Year', 'Month']].assign(day=1), errors='coerce')
                 filtered_retail = filtered_retail.dropna(subset=['Date'])
                 latest_retail_prices = filtered_retail.sort_values('Date').groupby(['market', 'commodity_id']).last().reset_index()
-                # Debug: Check for duplicate indices
                 if latest_retail_prices.index.duplicated().any():
                     st.warning("Duplicate indices found in retail prices. Removing duplicates.")
                     latest_retail_prices = latest_retail_prices.drop_duplicates().reset_index(drop=True)
@@ -331,25 +368,22 @@ def main():
                 if len(latest_retail_prices) > 500:
                     latest_retail_prices = latest_retail_prices.head(500)
                     st.warning("Limited to 500 retail price markers for performance.")
-
             st.session_state.latest_farmgate_prices = latest_farmgate_prices
             st.session_state.latest_retail_prices = latest_retail_prices
             st.session_state.map_data_updated = False
-            st.session_state.map_render_key += 1  # Increment key to force re-render
+            st.session_state.map_render_key += 1
 
         # Render Map
         map_placeholder = st.empty()
         with map_placeholder.container():
             with st.spinner("Rendering map..."):
                 try:
-                    # Initialize map with a center and zoom level covering Senegal
                     m = folium.Map(
-                        location=[14.5, -14.5],  # Center of Senegal
-                        zoom_start=6,  # Adjusted zoom for broader view
+                        location=[14.5, -14.5],
+                        zoom_start=6,
                         tiles="CartoDB Positron"
                     )
-                    # Note: Removed dynamic bounds calculation to fit all data layers
-                    # Map view is now fixed; ensure data layers are within this view
+                    folium.FitBounds([[12.3, -17], [16.7, -11]]).add_to(m)
 
                     # Add Roads Layer
                     if show_roads and roads_filtered:
@@ -437,7 +471,7 @@ def main():
                     Fullscreen(position='topright', title='Expand', title_cancel='Exit').add_to(m)
 
                     folium.LayerControl(collapsed=False).add_to(m)
-                    st_folium(m, width=1400, height=800, key=f"folium_map_{st.session_state.map_render_key}")
+                    st_folium(m, use_container_width=True, height=600, key=f"folium_map_{st.session_state.map_render_key}")
 
                     # Add Legends Below Map (Travel on Left, Friction on Right)
                     if show_travel or show_friction:
@@ -525,25 +559,22 @@ def main():
                 key="trend_commodity_select"
             )
             try:
-                # Process farmgate trends
                 farmgate_trend = prices_df[prices_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if not farmgate_trend.empty:
                     farmgate_trend['Date'] = pd.to_datetime(farmgate_trend[['Year', 'Month']].assign(day=1), errors='coerce')
-                    farmgate_trend = farmgate_trend.dropna(subset=['Date']).reset_index(drop=True)  # Ensure clean index
+                    farmgate_trend = farmgate_trend.dropna(subset=['Date']).reset_index(drop=True)
                     farmgate_trend['Price Type'] = 'Farmgate'
                 else:
-                    farmgate_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])  # Empty DataFrame with correct columns
+                    farmgate_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
 
-                # Process retail trends
                 retail_trend = retail_df[retail_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if not retail_trend.empty:
                     retail_trend['Date'] = pd.to_datetime(retail_trend[['Year', 'Month']].assign(day=1), errors='coerce')
-                    retail_trend = retail_trend.dropna(subset=['Date']).reset_index(drop=True)  # Ensure clean index
+                    retail_trend = retail_trend.dropna(subset=['Date']).reset_index(drop=True)
                     retail_trend['Price Type'] = 'Retail'
                 else:
-                    retail_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])  # Empty DataFrame with correct columns
+                    retail_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
 
-                # Combine trends
                 if not farmgate_trend.empty or not retail_trend.empty:
                     combined_trend = pd.concat([farmgate_trend, retail_trend], ignore_index=True)
                 else:
@@ -552,7 +583,6 @@ def main():
                 if combined_trend.empty:
                     st.warning(f"No trend data available for {commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)}.")
                 else:
-                    # Create Plotly figure
                     fig = go.Figure()
                     if 'Farmgate' in combined_trend['Price Type'].values:
                         fig.add_trace(go.Scatter(
@@ -575,7 +605,6 @@ def main():
                             hovertemplate='%{x|%b %Y}<br>Price: %{y:.2f}<br>Type: Retail'
                         ))
 
-                    # Customize layout
                     fig.update_layout(
                         title=f"{commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)} Price Trends",
                         xaxis_title="Date",
@@ -593,7 +622,7 @@ def main():
         else:
             st.warning("No data available for price trends. Please check your data.")
 
-    # Footer with updated copyright
+    # Footer
     st.markdown("""
     <div class="footer">
         <p>Developed by xAI in collaboration with IFPRI | Data Sources: IFPRI, OpenStreetMap | © 2025</p>
