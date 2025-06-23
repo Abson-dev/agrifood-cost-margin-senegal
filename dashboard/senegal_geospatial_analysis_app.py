@@ -98,11 +98,11 @@ try:
     markets = gpd.read_file(markets_path)
     if markets.empty:
         st.warning("Markets GeoJSON is empty")
-    roads_filtered = gpd.read_file(roads_filtered_path)
-    if roads_filtered.empty:
+    roads = gpd.read_file(roads_filtered_path)
+    if roads.empty():
         st.warning("Roads GeoJSON is empty")
 except Exception as e:
-    st.error(f"Error loading GeoJSON files: {e}")
+    st.error(f"Error reading GeoJSON files: {e}")
     sys.exit(1)
 
 # -------------------------------
@@ -110,13 +110,10 @@ except Exception as e:
 # -------------------------------
 try:
     prices_df = pd.read_excel(prices_path, sheet_name='Farmgate prices Senegal')
-    st.info(f"Loaded farmgate prices Excel with {len(prices_df)} rows")
-    with st.expander("Farmgate Column Names"):
-        st.write(prices_df.columns.tolist())
     if prices_df.empty:
         st.warning("Farmgate prices Excel is empty")
 except Exception as e:
-    st.error(f"Error loading farmgate prices file {prices_path}: {e}")
+    st.error(f"Error reading farmgate prices file {prices_path}: {e}")
     sys.exit(1)
 
 # Validate required farmgate columns
@@ -136,13 +133,10 @@ if invalid_farmgate_coords.any():
 # -------------------------------
 try:
     retail_df = pd.read_excel(prices_path, sheet_name='Retails Price Senegal')
-    st.info(f"Loaded retail prices Excel with {len(retail_df)} rows")
-    with st.expander("Retail Column Names"):
-        st.write(retail_df.columns.tolist())
     if retail_df.empty:
         st.warning("Retail prices Excel is empty")
 except Exception as e:
-    st.error(f"Error loading retail prices file {prices_path}: {e}")
+    st.error(f"Error reading retail prices file {prices_path}: {e}")
     sys.exit(1)
 
 # Validate required retail columns
@@ -201,26 +195,16 @@ if selected_month:
     prices_df = prices_df[prices_df['Month'] == selected_month]
     retail_df = retail_df[retail_df['Month'] == selected_month]
 
-# Display filtered data info
-st.info(f"Filtered farmgate prices to {selected_year_farmgate}-{selected_month:02d} with {len(prices_df)} rows")
-with st.expander("Unique Farmgate Commodities"):
-    st.write(prices_df['commodity_english'].unique().tolist() if not prices_df.empty else ["No data"])
-st.info(f"Filtered retail prices to {selected_year_retail}-{selected_month:02d} with {len(retail_df)} rows")
-with st.expander("Unique Retail Commodities"):
-    st.write(retail_df['commodity'].unique().tolist() if not retail_df.empty else ["No data"])
-
 # Group by region/market and commodity, take the most recent price
 if not prices_df.empty:
     prices_df['Date'] = pd.to_datetime(prices_df[['Year', 'Month']].assign(day=1))
     latest_farmgate_prices = prices_df.sort_values('Date').groupby(['Régions Name', 'Commodity']).last().reset_index()
-    st.info(f"Processed {len(latest_farmgate_prices)} unique farmgate price entries")
 else:
     latest_farmgate_prices = pd.DataFrame()
     st.warning("No farmgate price data available for the selected period")
 if not retail_df.empty:
     retail_df['Date'] = pd.to_datetime(retail_df[['Year', 'Month']].assign(day=1))
     latest_retail_prices = retail_df.sort_values('Date').groupby(['market', 'commodity']).last().reset_index()
-    st.info(f"Processed {len(latest_retail_prices)} unique retail price entries")
 else:
     latest_retail_prices = pd.DataFrame()
     st.warning("No retail price data available for the selected period")
@@ -272,7 +256,7 @@ m = folium.Map(location=[center_lat, center_lon], zoom_start=7, tiles="CartoDB P
 
 # Add Roads Layer
 folium.GeoJson(
-    roads_filtered,
+    roads,
     name="Roads",
     style_function=lambda x: {
         'color': 'blue',
