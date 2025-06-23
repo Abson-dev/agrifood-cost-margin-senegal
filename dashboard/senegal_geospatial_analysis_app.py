@@ -339,42 +339,14 @@ def main():
         with map_placeholder.container():
             with st.spinner("Rendering map..."):
                 try:
-                    # Calculate unified bounds from travel and friction rasters
-                    min_lat = min(travel_bounds[1], friction_bounds[1])
-                    max_lat = max(travel_bounds[3], friction_bounds[3])
-                    min_lon = min(travel_bounds[0], friction_bounds[0])
-                    max_lon = max(travel_bounds[2], friction_bounds[2])
-
-                    # Include market and price data bounds if available
-                    if not prices_df.empty:
-                        farmgate_lats = prices_df['Régions - Latitude'].dropna()
-                        farmgate_lons = prices_df['Régions - Longitude'].dropna()
-                        min_lat = min(min_lat, farmgate_lats.min()) if not farmgate_lats.empty else min_lat
-                        max_lat = max(max_lat, farmgate_lats.max()) if not farmgate_lats.empty else max_lat
-                        min_lon = min(min_lon, farmgate_lons.min()) if not farmgate_lons.empty else min_lon
-                        max_lon = max(max_lon, farmgate_lons.max()) if not farmgate_lons.empty else max_lon
-                    if not retail_df.empty:
-                        retail_lats = retail_df['latitude'].dropna()
-                        retail_lons = retail_df['longitude'].dropna()
-                        min_lat = min(min_lat, retail_lats.min()) if not retail_lats.empty else min_lat
-                        max_lat = max(max_lat, retail_lats.max()) if not retail_lats.empty else max_lat
-                        min_lon = min(min_lon, retail_lons.min()) if not retail_lons.empty else min_lon
-                        max_lon = max(max_lon, retail_lons.max()) if not retail_lons.empty else max_lon
-                    if markets:
-                        for feature in markets.get('features', []):
-                            if feature['geometry']['type'] == 'Point':
-                                lon, lat = feature['geometry']['coordinates']
-                                min_lat = min(min_lat, lat)
-                                max_lat = max(max_lat, lat)
-                                min_lon = min(min_lon, lon)
-                                max_lon = max(max_lon, lon)
-
-                    # Create map and fit to bounds
-                    m = folium.Map(location=[(min_lat + max_lat) / 2, (min_lon + max_lon) / 2], zoom_start=6, tiles="CartoDB Positron")
-                    folium.FitBounds([
-                        [min_lat, min_lon],
-                        [max_lat, max_lon]
-                    ]).add_to(m)
+                    # Initialize map with a center and zoom level covering Senegal
+                    m = folium.Map(
+                        location=[14.5, -14.5],  # Center of Senegal
+                        zoom_start=6,  # Adjusted zoom for broader view
+                        tiles="CartoDB Positron"
+                    )
+                    # Note: Removed dynamic bounds calculation to fit all data layers
+                    # Map view is now fixed; ensure data layers are within this view
 
                     # Add Roads Layer
                     if show_roads and roads_filtered:
@@ -464,12 +436,12 @@ def main():
                         <div style="position: fixed; bottom: 2%; left: 2%; width: 180px; height: 230px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
                         <b>Travel Time (min)</b><br><div style="margin-top:10px;">
                         <div style="background:#ffffcc;width:20px;height:20px;display:inline-block;"></div> 0–10<br>
-                        <div style="background:#ffeda0;width:20px;height:20px;display:inline-block;"></div> 10–30<br>
-                        <div style="background:#feb24c;width:20px;height:20px;display:inline-block;"></div> 30–60<br>
-                        <div style="background:#fd8d3c;width:20px;height:20px;display:inline-block;"></div> 60–120<br>
-                        <div style="background:#f03b20;width:20px;height:20px;display:inline-block;"></div> 120–240<br>
-                        <div style="background:#bd0026;width:20px;height:20px;display:inline-block;"></div> 240–1440<br>
-                        <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> >1440</div></div>
+                        <div style="background:#ffeda0;width:20px;height:20px;display:inline;"></div> 10–30<br>
+                        <div style="background:#feb24c;width:20px;height:20px;display:inline;"></div> 30–60<br>
+                        <div style="background:#fd8d3c;width:20px;height:20px;display:inline;"></div> 60–120<br>
+                        <div style="background:#f03b20;width:20px;height:20px;"></div> 120–240<br>
+                        <div style="background:#bd0026;width:20px;"></div> 240–1440<br>
+                        <div style="background:#800026;width:20px;"></div> >1440</div></div>
                         {% endmacro %}
                         """
                         travel_legend = MacroElement()
