@@ -610,7 +610,7 @@ def main():
         else:
             st.warning("No data available for price trends. Please check your data.")
 
-    # Footer
+    # Footer with updated copyright
     st.markdown("""
     <div class="footer">
         <p>Developed by xAI in collaboration with IFPRI | Data Sources: IFPRI, OpenStreetMap | © 2025</p>
