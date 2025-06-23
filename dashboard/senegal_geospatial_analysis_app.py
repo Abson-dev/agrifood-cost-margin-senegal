@@ -288,32 +288,31 @@ def main():
         show_retail = st.sidebar.checkbox("Retail Prices", value=True)
 
         # Update map data
-        if st.session_state.map_data_updated or not st.session_state.latest_farmgate_prices.empty or not st.session_state.latest_retail_prices.empty():
+        if st.session_state.map_data_updated or not st.session_state.latest_farmgate_prices.empty or not st.session_state.latest_retail_prices.empty:
             latest_farmgate_prices = pd.DataFrame()
-            latest_retail_prices = []
-            if not prices_df.empty():
+            latest_retail_prices = pd.DataFrame()
+            if not prices_df.empty:
                 filtered_farmgate = prices_df[prices_df['Year'] == selected_year] if selected_year else prices_df
                 if selected_month:
-                    filtered_farmgate = filtered_farmgate[filtered_farmgate['Month'] == filtered_farmgate]
-                    filtered_farmgate['Month'] == selected_month
-                filtered_farmgate['Date'] = pd.to_datetime(filtered_farmgate[['Year', 'Month']].assign(day=1), errors='coerce'])
-                filtered_farmedgate = filtered_dfarmgate.dropna(subset=['Date'])
-                latest_farmgate_prices = filtered_farmgate.sort_values('Date']).groupby(['Régions Name', 'Commodity']).last().reset_index()]
+                    filtered_farmgate = filtered_farmgate[filtered_farmgate['Month'] == selected_month]
+                filtered_farmgate['Date'] = pd.to_datetime(filtered_farmgate[['Year', 'Month']].assign(day=1), errors='coerce')
+                filtered_farmgate = filtered_farmgate.dropna(subset=['Date'])
+                latest_farmgate_prices = filtered_farmgate.sort_values('Date').groupby(['Régions Name', 'commodity_id']).last().reset_index()
                 if selected_commodity_ids:
-                    latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_id'].isin(selected_commodity_ids])]
+                    latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_id'].isin(selected_commodity_ids)]
                 if len(latest_farmgate_prices) > 500:
                     latest_farmgate_prices = latest_farmgate_prices.head(500)
                     st.warning("Limited to 500 farmgate price markers for performance.")
 
-            if not retail_df.empty():
+            if not retail_df.empty:
                 filtered_retail = retail_df[retail_df['Year'] == selected_year] if selected_year else retail_df
                 if selected_month:
                     filtered_retail = filtered_retail[filtered_retail['Month'] == selected_month]
-                filtered_retail['Date'] = pd.to_datetime(filtered_retail[['Year', 'Month']].assign(day=1)], errors='coerce')
+                filtered_retail['Date'] = pd.to_datetime(filtered_retail[['Year', 'Month']].assign(day=1), errors='coerce')
                 filtered_retail = filtered_retail.dropna(subset=['Date'])
-                latest_retail_prices = filtered_retail.sort_values('Date']).groupby(['market', 'commodity_id']).last().reset_index()]]
+                latest_retail_prices = filtered_retail.sort_values('Date').groupby(['market', 'commodity_id']).last().reset_index()
                 if selected_commodity_ids:
-                    latest_retail_prices = latest_retail_prices[latest_retail_prices['commodity_id'].isin(selected_commodity_ids])]
+                    latest_retail_prices = latest_retail_prices[latest_retail_prices['commodity_id'].isin(selected_commodity_ids)]
                 if len(latest_retail_prices) > 500:
                     latest_retail_prices = latest_retail_prices.head(500)
                     st.warning("Limited to 500 retail price markers for performance.")
@@ -419,10 +418,9 @@ def main():
                 <div style="background:#ffeda0;width:20px;height:20px;display:inline-block;"></div> 10–30<br>
                 <div style="background:#feb24c;width:20px;height:20px;display:inline-block;"></div> 30–60<br>
                 <div style="background:#fd8d3c;width:20px;height:20px;display:inline-block;"></div> 60–120<br>
-                <div style="background:#f03b20;width:20px;height:20px;display:inline-block;"></div> 120–240
-                <div style="background:#bd0026;width:20px;height:20px;display:inline-block;"></div> 240–1440
-                <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> >1440
-                </div></div>
+                <div style="background:#f03b20;width:20px;height:20px;display:inline-block;"></div> 120–240<br>
+                <div style="background:#bd0026;width:20px;height:20px;display:inline-block;"></div> 240–1440<br>
+                <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> >1440</div></div>
                 {% endmacro %}
                 """
                 travel_legend = MacroElement()
@@ -437,11 +435,11 @@ def main():
                 <div style="background:#006837;width:20px;height:20px;display:inline-block;"></div> ≤ 0.001<br>
                 <div style="background:#31a354;width:20px;height:20px;display:inline-block;"></div> ≤ 0.01<br>
                 <div style="background:#78c679;width:20px;height:20px;display:inline-block;"></div> ≤ 0.1<br>
-                <div style="background:#c2e699;width:20px;height:20px;display:inline-block;"></div> ≤ 0.5<br>
+                <div style="background:#c2e699;width:20px;height:20pxdisplay:inline-block;"></div> ≤ 0.5<br>
                 <div style="background:#fdae61;width:20px;height:20px;display:inline-block;"></div> ≤ 1.0<br>
-                <div style="background:#f46d43;width:20px;height:20px;display:inline-block;"></div> ≤ 2.0<br>
-                <div style="background:#a50026;width:20px;height:20px;display:inline-block;"></div> ≤ 5.0<br>
-                <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> > 5.0</div></div>
+                <div style="background:#f46d43;width:20px;height:20pxdisplay:inline-block;"></div> ≤ 2.0<br>
+                <div style="background:#a50026;width:20px;color:white;height:20px;display:inline-block;"></div> ≤ 5.0<br>
+                <div style="background:#800026;width:20px;color:white;height:20pxdisplay:inline;"></div> > 0.5</div></div>
                 {% endmacro %}
                 """
                 friction_legend = MacroElement()
@@ -451,11 +449,11 @@ def main():
             # Add MiniMap
             MiniMap(tiles='OpenStreetMap', position='bottomleft').add_to(m)
 
-            folium.LayerControl(collapsed=False).add_to(m)
+            folium.LayerControl().add_to(m)
             with st.spinner("Rendering map..."):
                 st_folium(m, width=1200, height=600, key="folium_map")
         except Exception as e:
-            st.error(f"Failed to render map: {e}. Please check data or try different filters.")
+            st.error(f"Failed to render map: {e}. Try different filters or check data.")
 
     with tab2:
         st.subheader("Data Summary")
