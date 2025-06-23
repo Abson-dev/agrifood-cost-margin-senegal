@@ -2,24 +2,28 @@ import os
 import json
 import rasterio
 import numpy as np
-import matplotlib.pyplot as plt
-import folium
 import pandas as pd
 from PIL import Image
-from branca.element import Template, MacroElement
+import folium
+from folium.plugins import FastMarkerCluster, MiniMap
 import streamlit as st
 from streamlit_folium import st_folium
-from folium.plugins import MarkerCluster
+from branca.element import Template, MacroElement
+import plotly.express as px
+import uuid
+import base64
 
 # -------------------------------
 # Configuration: File Paths
 # -------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-raster_path = os.path.join(BASE_DIR, '201501_Global_Travel_Time_to_Cities_SEN.tiff')
-friction_path = os.path.join(BASE_DIR, '201501_Global_Travel_Speed_Friction_Surface_SEN.tiff')
-markets_path = os.path.join(BASE_DIR, 'markets_from_excel.geojson')
-roads_filtered_path = os.path.join(BASE_DIR, 'roads_filtered.geojson')
-prices_path = os.path.join(BASE_DIR, 'merged_farmgate_retail_prices_senegal.xlsx')
+DEFAULT_FILES = {
+    'raster': os.path.join(BASE_DIR, '201501_Global_Travel_Time_to_Cities_SEN.tiff'),
+    'friction': os.path.join(BASE_DIR, '201501_Global_Travel_Speed_Friction_Surface_SEN.tiff'),
+    'markets': os.path.join(BASE_DIR, 'markets_from_excel.geojson'),
+    'roads': os.path.join(BASE_DIR, 'roads_filtered.geojson'),
+    'prices': os.path.join(BASE_DIR, 'merged_farmgate_retail_prices_senegal.xlsx')
+}
 
 # Initialize session state
 if 'map_data_updated' not in st.session_state:
@@ -28,16 +32,18 @@ if 'latest_farmgate_prices' not in st.session_state:
     st.session_state.latest_farmgate_prices = pd.DataFrame()
 if 'latest_retail_prices' not in st.session_state:
     st.session_state.latest_retail_prices = pd.DataFrame()
-if 'selected_year' not in st.session_state:
-    st.session_state.selected_year = None
-if 'selected_month' not in st.session_state:
-    st.session_state.selected_month = None
-if 'selected_commodities' not in st.session_state:
-    st.session_state.selected_commodities = []
+if 'file_paths' not in st.session_state:
+    st.session_state.file_paths = DEFAULT_FILES.copy()
 
 # -------------------------------
-# Helper Function: RGB Conversion
+# Helper Functions
 # -------------------------------
+def validate_file(file_path, file_type):
+    if not os.path.exists(file_path):
+        st.error(f"{file_type} file not found: {file_path}")
+        return False
+    return True
+
 def generate_colors(data, breaks, colors):
     """Convert raster data to RGB image based on specified colors."""
     rgb = np.zeros((data.shape[0], data.shape[1], 3), dtype=np.uint8)
@@ -49,40 +55,38 @@ def generate_colors(data, breaks, colors):
 # -------------------------------
 # Load and Process Rasters
 # -------------------------------
-@st.cache_data
-def load_and_process_raster(file_path):
-    with rasterio.open(file_path) as src:
-        data = src.read(1, out_shape=(1, src.height // 4, src.width // 4), resampling=rasterio.enums.Resampling.bilinear)
-        nodata = src.nodata
-        bounds = (src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top)
-    return np.ma.masked_equal(data, nodata) if nodata else np.ma.masked_invalid(data), bounds
-
-travel_time, travel_bounds = load_and_process_raster(raster_path)
-friction_data, friction_bounds = load_and_process_raster(friction_path)
+@st.cache_data(hash_funcs={np.ma.MaskedArray: lambda x: hash((x.data.tobytes(), x.mask.tobytes()))})
+def load_and_process_raster(file_path, downsample_factor=4):
+    try:
+        with rasterio.open(file_path) as src:
+            data = src.read(1, out_shape=(1, src.height // downsample_factor, src.width // downsample_factor), resampling=rasterio.enums.Resampling.bilinear)
+            nodata = src.nodata
+            bounds = (src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top)
+        return np.ma.masked_equal(data, nodata) if nodata else np.ma.masked_invalid(data), bounds
+    except rasterio.errors.RasterioIOError as e:
+        st.error(f"Failed to load raster {file_path}: {e}")
+        return None, None
 
 # -------------------------------
 # Generate Raster Images
 # -------------------------------
-@st.cache_data(hash_funcs={np.ma.MaskedArray: lambda x: hash(x.data.tobytes())})
+@st.cache_data(hash_funcs={np.ma.MaskedArray: lambda x: hash((x.data.tobytes(), x.mask.tobytes()))})
 def generate_travel_image(data, bounds):
     breaks = [0, 10, 30, 60, 120, 240, 1440, np.inf]
     colors = [(255, 255, 204), (255, 237, 160), (254, 178, 76), (253, 141, 60), (240, 59, 32), (189, 0, 38), (128, 0, 38)]
     rgb = generate_colors(data, breaks, colors)
-    travel_png_path = 'travel_time_colored.png'
+    travel_png_path = f'travel_time_{str(uuid.uuid4())}.png'
     Image.fromarray(rgb).save(travel_png_path)
     return travel_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
 
-@st.cache_data(hash_funcs={np.ma.MaskedArray: lambda x: hash(x.data.tobytes())})
+@st.cache_data(hash_funcs={np.ma.MaskedArray: lambda x: hash((x.data.tobytes(), x.mask.tobytes()))})
 def generate_friction_image(data, bounds):
-    friction_breaks = [0, 0.001, 0.01, 0.1, 0.5, 1.0, 2.0, 5.0, np.inf]
+    friction_breaks = [0, 0.001, 0.01, 0.1, 0.5, 1.0, 2.0, np.inf]
     friction_colors = [(0, 104, 55), (49, 163, 84), (120, 198, 121), (194, 230, 153), (253, 174, 97), (244, 109, 67), (165, 0, 38), (128, 0, 38)]
     rgb = generate_colors(data, friction_breaks, friction_colors)
-    friction_png_path = 'friction_surface_colored.png'
+    friction_png_path = f'friction_surface_{str(uuid.uuid4())}.png'
     Image.fromarray(rgb).save(friction_png_path)
     return friction_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
-
-travel_png_path, travel_image_bounds = generate_travel_image(travel_time, travel_bounds)
-friction_png_path, friction_image_bounds = generate_friction_image(friction_data, friction_bounds)
 
 # -------------------------------
 # Load GeoJSON Files
@@ -93,18 +97,15 @@ def load_geojson(file_path):
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         if data.get('type') != 'FeatureCollection':
-            st.warning(f"{file_path} is not a valid FeatureCollection; skipping")
+            st.warning(f"{file_path} is not a valid FeatureCollection")
             return None
         return data
     except Exception as e:
-        st.warning(f"Failed to load {file_path}: {e}; skipping")
+        st.warning(f"Failed to load {file_path}: {e}")
         return None
 
-markets = load_geojson(markets_path)
-roads_filtered = load_geojson(roads_filtered_path)
-
 # -------------------------------
-# Load and Process Price Data
+# Load Price Data
 # -------------------------------
 @st.cache_data
 def load_price_data(file_path):
@@ -130,166 +131,328 @@ def load_retail_data(file_path):
         st.error(f"Error reading retail prices file {file_path}: {e}")
         return pd.DataFrame()
 
-prices_df = load_price_data(prices_path)
-retail_df = load_retail_data(prices_path)
-
-# Validate required columns
-farmgate_required_columns = ['Régions Name', 'Commodity', 'commodity_english', 'Price', 'Unit2', 'Régions - Latitude', 'Régions - Longitude', 'Year', 'Month']
-retail_required_columns = ['market', 'commodity', 'price', 'Unit2', 'latitude', 'longitude', 'Year', 'Month']
-if not prices_df.empty and any(col not in prices_df.columns for col in farmgate_required_columns):
-    st.error("Missing required columns in farmgate prices")
-    prices_df = pd.DataFrame()
-if not retail_df.empty and any(col not in retail_df.columns for col in retail_required_columns):
-    st.error("Missing required columns in retail prices")
-    retail_df = pd.DataFrame()
-
-# Check for invalid coordinates
-if not prices_df.empty:
-    invalid_farmgate_coords = prices_df[['Régions - Latitude', 'Régions - Longitude']].isna().any(axis=1)
-    if invalid_farmgate_coords.any():
-        st.warning(f"Found {invalid_farmgate_coords.sum()} rows with invalid coordinates in farmgate prices")
-if not retail_df.empty:
-    invalid_retail_coords = retail_df[['latitude', 'longitude']].isna().any(axis=1)
-    if invalid_retail_coords.any():
-        st.warning(f"Found {invalid_retail_coords.sum()} rows with invalid coordinates in retail prices")
-
 # -------------------------------
-# Filter Data and Render Map
+# Main Dashboard
 # -------------------------------
-st.sidebar.header("Filter Price Data")
-common_years = sorted(list(set(prices_df['Year']).intersection(set(retail_df['Year'])))) if not prices_df.empty and not retail_df.empty else []
-selected_year = st.sidebar.selectbox("Select Year", common_years, index=common_years.index(2025) if 2025 in common_years else len(common_years)-1, key="year_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
-if not common_years:
-    st.sidebar.warning("No common years found between farmgate and retail prices.")
-elif 2025 not in common_years:
-    st.sidebar.warning("No data available for 2025; using latest available year.")
+def main():
+    # Custom CSS for styling
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
+    body { font-family: 'Roboto', sans-serif; }
+    .main { background-color: #f9fafb; }
+    .sidebar .sidebar-content { background-color: #ffffff; }
+    .stButton>button { background-color: #1e3a8a; color: white; border-radius: 8px; }
+    .stSelectbox, .stMultiselect { background-color: #f3f4f6; border-radius: 8px; }
+    .header { background-color: #1e3a8a; color: white; padding: 20px; border-radius: 8px; }
+    .footer { background-color: #1e3a8a; color: white; padding: 10px; text-align: center; margin-top: 20px; }
+    </style>
+    """, unsafe_allow_html=True)
 
-month_names = {1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
-               7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"}
-available_months = sorted(list(set(prices_df['Month'].unique()) | set(retail_df['Month'].unique()))) if not prices_df.empty or not retail_df.empty else []
-selected_month_name = st.sidebar.selectbox("Select Month", [month_names.get(m, str(m)) for m in available_months], index=available_months.index(6) if 6 in available_months else len(available_months)-1, key="month_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
-selected_month = next((k for k, v in month_names.items() if v == selected_month_name), selected_month_name) if selected_month_name else None
-if not available_months:
-    st.sidebar.error("No months available for the selected year(s).")
-elif 6 not in available_months:
-    st.sidebar.warning("No data available for June 2025; using latest available month.")
+    # Header with IFPRI branding
+    st.markdown("""
+    <div class="header">
+        <img src="https://www.ifpri.org/themes/custom/ifpri/logo.svg" alt="IFPRI Logo" width="150">
+        <h1>Senegal Agricultural Market Dashboard</h1>
+        <p>Developed in collaboration with the International Food Policy Research Institute (IFPRI)</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-commodities = sorted(list(set(prices_df['commodity_english'].unique()) | set(retail_df['commodity'].unique()))) if not prices_df.empty or not retail_df.empty else []
-selected_commodities = st.sidebar.multiselect("Select Commodities", commodities, default=commodities, key="commodity_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
+    # Introduction
+    st.markdown("""
+    ### Welcome to the Senegal Agricultural Market Dashboard
+    This interactive tool visualizes travel time, friction surfaces, market locations, road networks, and commodity prices across Senegal. 
+    Use the filters to explore data and download insights for research and policy-making.
+    """)
 
-# Update map data when filters change or on initial load
-if st.session_state.map_data_updated or not st.session_state.latest_farmgate_prices.empty or not st.session_state.latest_retail_prices.empty:
-    latest_farmgate_prices = pd.DataFrame()
-    latest_retail_prices = pd.DataFrame()
-    if not prices_df.empty:
-        filtered_farmgate = prices_df[prices_df['Year'] == selected_year] if selected_year else prices_df
-        if selected_month:
-            filtered_farmgate = filtered_farmgate[filtered_farmgate['Month'] == selected_month]
-        filtered_farmgate['Date'] = pd.to_datetime(filtered_farmgate[['Year', 'Month']].assign(day=1))
-        latest_farmgate_prices = filtered_farmgate.sort_values('Date').groupby(['Régions Name', 'Commodity']).last().reset_index()
-        if selected_commodities:
-            latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_english'].isin(selected_commodities)]
-        if len(latest_farmgate_prices) > 500:
-            latest_farmgate_prices = latest_farmgate_prices.head(500)
-            st.warning("Limited to 500 farmgate price markers for performance.")
-        if latest_farmgate_prices.empty:
-            st.warning("No farmgate price data available for the selected period")
+    # File Upload Section
+    st.sidebar.header("Data Sources")
+    uploaded_files = {}
+    for key, default_path in DEFAULT_FILES.items():
+        uploaded_file = st.sidebar.file_uploader(f"Upload {key.capitalize()} File", type=['tiff', 'geojson', 'xlsx'] if key in ['prices'] else ['tiff'] if key in ['raster', 'friction'] else ['geojson'])
+        if uploaded_file:
+            uploaded_path = os.path.join(BASE_DIR, uploaded_file.name)
+            with open(uploaded_path, 'wb') as f:
+                f.write(uploaded_file.getbuffer())
+            uploaded_files[key] = uploaded_path
+        else:
+            uploaded_files[key] = default_path
 
-    if not retail_df.empty:
-        filtered_retail = retail_df[retail_df['Year'] == selected_year] if selected_year else retail_df
-        if selected_month:
-            filtered_retail = filtered_retail[filtered_retail['Month'] == selected_month]
-        filtered_retail['Date'] = pd.to_datetime(filtered_retail[['Year', 'Month']].assign(day=1))
-        latest_retail_prices = filtered_retail.sort_values('Date').groupby(['market', 'commodity']).last().reset_index()
-        if selected_commodities:
-            latest_retail_prices = latest_retail_prices[latest_retail_prices['commodity'].isin(selected_commodities)]
-        if len(latest_retail_prices) > 500:
-            latest_retail_prices = latest_retail_prices.head(500)
-            st.warning("Limited to 500 retail price markers for performance.")
-        if latest_retail_prices.empty:
-            st.warning("No retail price data available for the selected period")
+    st.session_state.file_paths.update(uploaded_files)
 
-    # Update session state
-    st.session_state.latest_farmgate_prices = latest_farmgate_prices
-    st.session_state.latest_retail_prices = latest_retail_prices
-    st.session_state.map_data_updated = False
+    # Validate files
+    for key, path in st.session_state.file_paths.items():
+        if not validate_file(path, key.capitalize()):
+            st.stop()
 
-    # Render Map
-    st.subheader("Interactive Map")
-    try:
-        center_lat = (travel_bounds[1] + travel_bounds[3]) / 2
-        center_lon = (travel_bounds[0] + travel_bounds[2]) / 2
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=7, tiles="CartoDB Positron")
+    # Load data with progress bar
+    with st.spinner("Loading data..."):
+        progress = st.progress(0)
+        travel_time, travel_bounds = load_and_process_raster(st.session_state.file_paths['raster'])
+        progress.progress(0.2)
+        friction_data, friction_bounds = load_and_process_raster(st.session_state.file_paths['friction'])
+        progress.progress(0.4)
+        markets = load_geojson(st.session_state.file_paths['markets'])
+        progress.progress(0.6)
+        roads_filtered = load_geojson(st.session_state.file_paths['roads'])
+        progress.progress(0.8)
+        prices_df = load_price_data(st.session_state.file_paths['prices'])
+        retail_df = load_retail_data(st.session_state.file_paths['prices'])
+        progress.progress(1.0)
 
-        # Add Roads Layer
-        if roads_filtered:
-            try:
+    if travel_time is None or friction_data is None:
+        st.error("Failed to load raster data. Please check the files and try again.")
+        st.stop()
+
+    # Generate raster images
+    travel_png_path, travel_image_bounds = generate_travel_image(travel_time, travel_bounds)
+    friction_png_path, friction_image_bounds = generate_friction_image(friction_data, friction_bounds)
+
+    # Validate price data columns
+    farmgate_required_columns = ['Régions Name', 'Commodity', 'commodity_english', 'Price', 'Unit2', 'Régions - Latitude', 'Régions - Longitude', 'Year', 'Month']
+    retail_required_columns = ['market', 'commodity', 'price', 'Unit2', 'latitude', 'longitude', 'Year', 'Month']
+    if not prices_df.empty and any(col not in prices_df.columns for col in farmgate_required_columns):
+        st.error("Missing required columns in farmgate prices")
+        prices_df = pd.DataFrame()
+    if not retail_df.empty and any(col not in retail_df.columns for col in retail_required_columns):
+        st.error("Missing required columns in retail prices")
+        retail_df = pd.DataFrame()
+
+    # Tabs for different views
+    tab1, tab2, tab3 = st.tabs(["Interactive Map", "Data Summary", "Price Trends"])
+
+    with tab1:
+        st.subheader("Interactive Map")
+        st.markdown("Explore travel time, friction surfaces, markets, roads, and commodity prices.")
+
+        # Filter controls
+        st.sidebar.header("Map Filters")
+        common_years = sorted(list(set(prices_df['Year']).intersection(set(retail_df['Year'])))) if not prices_df.empty and not retail_df.empty else []
+        latest_year = max(common_years) if common_years else None
+        selected_year = st.sidebar.selectbox("Select Year", common_years, index=common_years.index(latest_year) if latest_year else 0, key="year_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
+
+        month_names = {1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
+                       7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"}
+        available_months = sorted(list(set(prices_df['Month'].unique()) | set(retail_df['Month'].unique()))) if not prices_df.empty or not retail_df.empty else []
+        latest_month = max(available_months) if available_months else None
+        selected_month_name = st.sidebar.selectbox("Select Month", [month_names.get(m, str(m)) for m in available_months], index=available_months.index(latest_month) if latest_month else 0, key="month_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
+        selected_month = next((k for k, v in month_names.items() if v == selected_month_name), selected_month_name) if selected_month_name else None
+
+        commodities = sorted(list(set(prices_df['commodity_english'].unique()) | set(retail_df['commodity'].unique()))) if not prices_df.empty or not retail_df.empty else []
+        selected_commodities = st.sidebar.multiselect("Select Commodities", commodities, default=commodities, key="commodity_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
+
+        # Layer toggles
+        st.sidebar.header("Map Layers")
+        show_travel = st.sidebar.checkbox("Travel Time", value=True)
+        show_friction = st.sidebar.checkbox("Friction Surface", value=True)
+        show_roads = st.sidebar.checkbox("Roads", value=True)
+        show_markets = st.sidebar.checkbox("Markets", value=True)
+        show_farmgate = st.sidebar.checkbox("Farmgate Prices", value=True)
+        show_retail = st.sidebar.checkbox("Retail Prices", value=True)
+
+        # Update map data
+        if st.session_state.map_data_updated or not st.session_state.latest_farmgate_prices.empty or not st.session_state.latest_retail_prices.empty:
+            latest_farmgate_prices = pd.DataFrame()
+            latest_retail_prices = pd.DataFrame()
+            if not prices_df.empty:
+                filtered_farmgate = prices_df[prices_df['Year'] == selected_year] if selected_year else prices_df
+                if selected_month:
+                    filtered_farmgate = filtered_farmgate[filtered_farmgate['Month'] == selected_month]
+                filtered_farmgate['Date'] = pd.to_datetime(filtered_farmgate[['Year', 'Month']].assign(day=1))
+                latest_farmgate_prices = filtered_farmgate.sort_values('Date').groupby(['Régions Name', 'Commodity']).last().reset_index()
+                if selected_commodities:
+                    latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_english'].isin(selected_commodities)]
+                if len(latest_farmgate_prices) > 500:
+                    latest_farmgate_prices = latest_farmgate_prices.head(500)
+                    st.warning("Limited to 500 farmgate price markers for performance.")
+
+            if not retail_df.empty:
+                filtered_retail = retail_df[retail_df['Year'] == selected_year] if selected_year else retail_df
+                if selected_month:
+                    filtered_retail = filtered_retail[filtered_retail['Month'] == selected_month]
+                filtered_retail['Date'] = pd.to_datetime(filtered_retail[['Year', 'Month']].assign(day=1))
+                latest_retail_prices = filtered_retail.sort_values('Date').groupby(['market', 'commodity']).last().reset_index()
+                if selected_commodities:
+                    latest_retail_prices = latest_retail_prices[latest_retail_prices['commodity'].isin(selected_commodities)]
+                if len(latest_retail_prices) > 500:
+                    latest_retail_prices = latest_retail_prices.head(500)
+                    st.warning("Limited to 500 retail price markers for performance.")
+
+            st.session_state.latest_farmgate_prices = latest_farmgate_prices
+            st.session_state.latest_retail_prices = latest_retail_prices
+            st.session_state.map_data_updated = False
+
+        # Render Map
+        try:
+            center_lat = (travel_bounds[1] + travel_bounds[3]) / 2
+            center_lon = (travel_bounds[0] + travel_bounds[2]) / 2
+            m = folium.Map(location=[center_lat, center_lon], zoom_start=7, tiles="CartoDB Positron")
+
+            # Add Roads Layer
+            if show_roads and roads_filtered:
                 folium.GeoJson(
                     roads_filtered,
                     name="Roads",
-                    style_function=lambda x: {'color': 'blue', 'weight': 1, 'opacity': 0.7}
+                    style_function=lambda x: {'color': '#3b82f6', 'weight': 1, 'opacity': 0.7}
                 ).add_to(m)
-            except Exception as e:
-                st.warning(f"Failed to add roads layer to map: {e}")
 
-        # Add Markets Layer
-        if markets:
-            try:
+            # Add Markets Layer
+            if show_markets and markets:
                 market_group = folium.FeatureGroup(name="Markets", show=True)
                 for feature in markets.get('features', []):
-                    if feature['geometry']['type'] == 'Point':
+                    if feature['geometry']['type'] == 'Point' and all(isinstance(c, (int, float)) for c in feature['geometry']['coordinates']):
                         coords = feature['geometry']['coordinates'][::-1]
                         popup = feature['properties'].get('market', 'Unknown Market')
-                        folium.Marker(location=coords, popup=popup, icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')).add_to(market_group)
+                        folium.Marker(
+                            location=coords,
+                            popup=popup,
+                            icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
+                        ).add_to(market_group)
                 market_group.add_to(m)
-            except Exception as e:
-                st.warning(f"Failed to add markets layer to map: {e}")
 
-        # Add Farmgate Prices Layer with Clustering
-        farmgate_cluster = MarkerCluster(name="Farmgate Prices", show=True).add_to(m)
-        for _, row in st.session_state.latest_farmgate_prices.iterrows():
-            if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
-                st.warning(f"Skipping farmgate row with invalid coordinates: {row['Régions Name']}, {row['Commodity']}")
-                continue
-            popup_text = f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
-            folium.Marker(location=[row['Régions - Latitude'], row['Régions - Longitude']], popup=folium.Popup(popup_text, max_width=250), icon=folium.Icon(color='green', icon='tractor', prefix='fa')).add_to(farmgate_cluster)
+            # Add Farmgate Prices Layer
+            if show_farmgate and not st.session_state.latest_farmgate_prices.empty:
+                farmgate_cluster = FastMarkerCluster(name="Farmgate Prices").add_to(m)
+                for _, row in st.session_state.latest_farmgate_prices.iterrows():
+                    if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
+                        continue
+                    popup_text = f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
+                    folium.Marker(
+                        location=[row['Régions - Latitude'], row['Régions - Longitude']],
+                        popup=folium.Popup(popup_text, max_width=250),
+                        icon=folium.Icon(color='green', icon='tractor', prefix='fa')
+                    ).add_to(farmgate_cluster)
 
-        # Add Retail Prices Layer with Clustering
-        retail_cluster = MarkerCluster(name="Retail Prices", show=True).add_to(m)
-        for _, row in st.session_state.latest_retail_prices.iterrows():
-            if pd.isna(row['latitude']) or pd.isna(row['longitude']):
-                st.warning(f"Skipping retail row with invalid coordinates: {row['market'], row['commodity']}")
-                continue
-            popup_text = f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity']}<br><b>Price:</b> {row['price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
-            folium.Marker(location=[row['latitude'], row['longitude']], popup=folium.Popup(popup_text, max_width=250), icon=folium.Icon(color='purple', icon='shopping-basket', prefix='fa')).add_to(retail_cluster)
+            # Add Retail Prices Layer
+            if show_retail and not st.session_state.latest_retail_prices.empty:
+                retail_cluster = FastMarkerCluster(name="Retail Prices").add_to(m)
+                for _, row in st.session_state.latest_retail_prices.iterrows():
+                    if pd.isna(row['latitude']) or pd.isna(row['longitude']):
+                        continue
+                    popup_text = f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity']}<br><b>Price:</b> {row['price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
+                    folium.Marker(
+                        location=[row['latitude'], row['longitude']],
+                        popup=folium.Popup(popup_text, max_width=250),
+                        icon=folium.Icon(color='purple', icon='shopping-basket', prefix='fa')
+                    ).add_to(retail_cluster)
 
-        # Add Raster Overlays
-        folium.raster_layers.ImageOverlay(name="Travel Time", image=travel_png_path, bounds=travel_image_bounds, opacity=0.6, interactive=True, cross_origin=False).add_to(m)
-        folium.raster_layers.ImageOverlay(name="Friction Surface (min/m)", image=friction_png_path, bounds=friction_image_bounds, opacity=0.7, interactive=True, cross_origin=False).add_to(m)
+            # Add Raster Overlays
+            if show_travel:
+                folium.raster_layers.ImageOverlay(
+                    name="Travel Time",
+                    image=travel_png_path,
+                    bounds=travel_image_bounds,
+                    opacity=0.6,
+                    interactive=True,
+                    cross_origin=False
+                ).add_to(m)
+            if show_friction:
+                folium.raster_layers.ImageOverlay(
+                    name="Friction Surface (min/m)",
+                    image=friction_png_path,
+                    bounds=friction_image_bounds,
+                    opacity=0.7,
+                    interactive=True,
+                    cross_origin=False
+                ).add_to(m)
 
-        # Add Legends
-        travel_legend_html = """
-        {% macro html(this, kwargs) %}
-        <div style="position: fixed; bottom: 5%; left: 2%; width: 180px; height: 230px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
-        <b>Travel Time (min)</b><br><div style="margin-top:10px;"><div style="background:#ffffcc;width:20px;height:20px;display:inline-block;"></div> 0–10<br><div style="background:#ffeda0;width:20px;height:20px;display:inline-block;"></div> 10–30<br><div style="background:#feb24c;width:20px;height:20px;display:inline-block;"></div> 30–60<br><div style="background:#fd8d3c;width:20px;height:20px;display:inline-block;"></div> 60–120<br><div style="background:#f03b20;width:20px;height:20px;display:inline-block;"></div> 120–240<br><div style="background:#bd0026;width:20px;height:20px;display:inline-block;"></div> 240–1440<br><div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> >1440</div></div>
-        {% endmacro %}
-        """
-        travel_legend = MacroElement()
-        travel_legend._template = Template(travel_legend_html)
-        m.get_root().add_child(travel_legend)
+            # Add Legends
+            if show_travel:
+                travel_legend_html = """
+                {% macro html(this, kwargs) %}
+                <div style="position: fixed; bottom: 5%; left: 2%; width: 180px; height: 230px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
+                <b>Travel Time (min)</b><br><div style="margin-top:10px;">
+                <div style="background:#ffffcc;width:20px;height:20px;display:inline-block;"></div> 0–10<br>
+                <div style="background:#ffeda0;width:20px;height:20px;display:inline-block;"></div> 10–30<br>
+                <div style="background:#feb24c;width:20px;height:20px;display:inline-block;"></div> 30–60<br>
+                <div style="background:#fd8d3c;width:20px;height:20px;display:inline-block;"></div> 60–120<br>
+                <div style="background:#f03b20;width:20px;height:20px;display:inline-block;"></div> 120–240<br>
+                <div style="background:#bd0026;width:20px;height:20px;display:inline-block;"></div> 240–1440<br>
+                <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> >1440</div></div>
+                {% endmacro %}
+                """
+                travel_legend = MacroElement()
+                travel_legend._template = Template(travel_legend_html)
+                m.get_root().add_child(travel_legend)
 
-        friction_legend_html = """
-        {% macro html(this, kwargs) %}
-        <div style="position: fixed; bottom: 5%; right: 2%; width: 200px; height: 260px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
-        <b>Friction (min/m)</b><br><div style="margin-top:10px;"><div style="background:#006837;width:20px;height:20px;display:inline-block;"></div> ≤ 0.001<br><div style="background:#31a354;width:20px;height:20px;display:inline-block;"></div> ≤ 0.01<br><div style="background:#78c679;width:20px;height:20px;display:inline-block;"></div> ≤ 0.1<br><div style="background:#c2e699;width:20px;height:20px;display:inline-block;"></div> ≤ 0.5<br><div style="background:#fdae61;width:20px;height:20px;display:inline-block;"></div> ≤ 1.0<br><div style="background:#f46d43;width:20px;height:20px;display:inline-block;"></div> ≤ 2.0<br><div style="background:#a50026;width:20px;height:20px;display:inline-block;"></div> ≤ 5.0<br><div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> > 5.0</div></div>
-        {% endmacro %}
-        """
-        friction_legend = MacroElement()
-        friction_legend._template = Template(friction_legend_html)
-        m.get_root().add_child(friction_legend)
+            if show_friction:
+                friction_legend_html = """
+                {% macro html(this, kwargs) %}
+                <div style="position: fixed; bottom: 5%; right: 2%; width: 200px; height: 260px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
+                <b>Friction (min/m)</b><br><div style="margin-top:10px;">
+                <div style="background:#006837;width:20px;height:20px;display:inline-block;"></div> ≤ 0.001<br>
+                <div style="background:#31a354;width:20px;height:20px;display:inline-block;"></div> ≤ 0.01<br>
+                <div style="background:#78c679;width:20px;height:20px;display:inline-block;"></div> ≤ 0.1<br>
+                <div style="background:#c2e699;width:20px;height:20px;display:inline-block;"></div> ≤ 0.5<br>
+                <div style="background:#fdae61;width:20px;height:20px;display:inline-block;"></div> ≤ 1.0<br>
+                <div style="background:#f46d43;width:20px;height:20px;display:inline-block;"></div> ≤ 2.0<br>
+                <div style="background:#a50026;width:20px;height:20px;display:inline-block;"></div> ≤ 5.0<br>
+                <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> > 5.0</div></div>
+                {% endmacro %}
+                """
+                friction_legend = MacroElement()
+                friction_legend._template = Template(friction_legend_html)
+                m.get_root().add_child(friction_legend)
 
-        folium.LayerControl().add_to(m)
-        with st.spinner("Rendering map..."):
-            st_folium(m, width=1200, height=600)
-    except Exception as e:
-        st.error(f"Failed to render map: {e}. Please check data or try different filters.")
+            # Add MiniMap
+            MiniMap(tiles='OpenStreetMap', position='bottomleft').add_to(m)
+
+            folium.LayerControl(collapsed=False).add_to(m)
+            with st.spinner("Rendering map..."):
+                st_folium(m, width=1200, height=600, key="folium_map")
+        except Exception as e:
+            st.error(f"Failed to render map: {e}. Please check data or try different filters.")
+
+    with tab2:
+        st.subheader("Data Summary")
+        if not st.session_state.latest_farmgate_prices.empty:
+            st.markdown("### Farmgate Prices")
+            st.dataframe(st.session_state.latest_farmgate_prices[['Régions Name', 'commodity_english', 'Price', 'Unit2', 'Year', 'Month']])
+            csv = st.session_state.latest_farmgate_prices.to_csv(index=False)
+            st.download_button("Download Farmgate Prices", csv, "farmgate_prices.csv", "text/csv")
+            st.markdown("#### Statistics")
+            stats = st.session_state.latest_farmgate_prices.groupby('commodity_english')['Price'].agg(['mean', 'min', 'max']).reset_index()
+            st.dataframe(stats)
+
+        if not st.session_state.latest_retail_prices.empty:
+            st.markdown("### Retail Prices")
+            st.dataframe(st.session_state.latest_retail_prices[['market', 'commodity', 'price', 'Unit2', 'Year', 'Month']])
+            csv = st.session_state.latest_retail_prices.to_csv(index=False)
+            st.download_button("Download Retail Prices", csv, "retail_prices.csv", "text/csv")
+            st.markdown("#### Statistics")
+            stats = st.session_state.latest_retail_prices.groupby('commodity')['price'].agg(['mean', 'min', 'max']).reset_index()
+            st.dataframe(stats)
+
+        st.markdown("### Data Overview")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Markets", len(markets['features']) if markets else 0)
+        col2.metric("Road Features", len(roads_filtered['features']) if roads_filtered else 0)
+        col3.metric("Price Points", len(st.session_state.latest_farmgate_prices) + len(st.session_state.latest_retail_prices))
+
+    with tab3:
+        st.subheader("Price Trends")
+        if not prices_df.empty:
+            st.markdown("### Farmgate Price Trends")
+            commodity = st.selectbox("Select Commodity for Trend", prices_df['commodity_english'].unique())
+            trend_data = prices_df[prices_df['commodity_english'] == commodity][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
+            trend_data['Date'] = pd.to_datetime(trend_data[['Year', 'Month']].assign(day=1))
+            fig = px.line(trend_data, x='Date', y='Price', title=f"{commodity} Farmgate Price Trend")
+            st.plotly_chart(fig)
+
+        if not retail_df.empty:
+            st.markdown("### Retail Price Trends")
+            commodity = st.selectbox("Select Commodity for Retail Trend", retail_df['commodity'].unique())
+            trend_data = retail_df[retail_df['commodity'] == commodity][['Year', 'Month', 'price']].groupby(['Year', 'Month']).mean().reset_index()
+            trend_data['Date'] = pd.to_datetime(trend_data[['Year', 'Month']].assign(day=1))
+            fig = px.line(trend_data, x='Date', y='Price', title=f"{commodity} Retail Price Trend")
+            st.plotly_chart(fig)
+
+    # Footer
+    st.markdown("""
+    <div class="footer">
+        <p>Developed by xAI in collaboration with IFPRI | Data Sources: IFPRI, OpenStreetMap | © 2025</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main()
