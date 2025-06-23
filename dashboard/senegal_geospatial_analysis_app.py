@@ -24,7 +24,6 @@ prices_path = os.path.join(BASE_DIR, 'merged_farmgate_retail_prices_senegal.xlsx
 # -------------------------------
 # Helper Function: RGB Conversion
 # -------------------------------
-@st.cache_data
 def generate_colors(data, breaks, colors):
     """Convert raster data to RGB image based on specified colors."""
     rgb = np.zeros((data.shape[0], data.shape[1], 3), dtype=np.uint8)
@@ -42,11 +41,33 @@ def load_and_process_raster(file_path):
         # Downsample to reduce computation time
         data = src.read(1, out_shape=(1, src.height // 2, src.width // 2), resampling=rasterio.enums.Resampling.bilinear)
         nodata = src.nodata
-        bounds = src.bounds
+        bounds = (src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top)  # Convert to hashable tuple
     return np.ma.masked_equal(data, nodata) if nodata else np.ma.masked_invalid(data), bounds
 
 travel_time, travel_bounds = load_and_process_raster(raster_path)
 friction_data, friction_bounds = load_and_process_raster(friction_path)
+
+# -------------------------------
+# Generate Raster Images
+# -------------------------------
+def generate_travel_image(data, bounds):
+    breaks = [0, 10, 30, 60, 120, 240, 1440, np.inf]
+    colors = [(255, 255, 204), (255, 237, 160), (254, 178, 76), (253, 141, 60), (240, 59, 32), (189, 0, 38), (128, 0, 38)]
+    rgb = generate_colors(data, breaks, colors)
+    travel_png_path = 'travel_time_colored.png'
+    Image.fromarray(rgb).save(travel_png_path)
+    return travel_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
+
+def generate_friction_image(data, bounds):
+    friction_breaks = [0, 0.001, 0.01, 0.1, 0.5, 1.0, 2.0, 5.0, np.inf]
+    friction_colors = [(0, 104, 55), (49, 163, 84), (120, 198, 121), (194, 230, 153), (253, 174, 97), (244, 109, 67), (165, 0, 38), (128, 0, 38)]
+    rgb = generate_colors(data, friction_breaks, friction_colors)
+    friction_png_path = 'friction_surface_colored.png'
+    Image.fromarray(rgb).save(friction_png_path)
+    return friction_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
+
+travel_png_path, travel_image_bounds = generate_travel_image(travel_time, travel_bounds)
+friction_png_path, friction_image_bounds = generate_friction_image(friction_data, friction_bounds)
 
 # -------------------------------
 # Load GeoJSON Files
@@ -165,40 +186,12 @@ else:
     st.warning("Click 'Apply Filters' to load and display data.")
 
 # -------------------------------
-# Color Mapping for Travel Time
-# -------------------------------
-@st.cache_data
-def generate_travel_image(data, bounds):
-    breaks = [0, 10, 30, 60, 120, 240, 1440, np.inf]
-    colors = [(255, 255, 204), (255, 237, 160), (254, 178, 76), (253, 141, 60), (240, 59, 32), (189, 0, 38), (128, 0, 38)]
-    rgb = generate_colors(data, breaks, colors)
-    png_path = 'travel_time_colored.png'
-    Image.fromarray(rgb).save(png_path)
-    return png_path, [[bounds.bottom, bounds.left], [bounds.top, bounds.right]]
-
-travel_png_path, travel_image_bounds = generate_travel_image(travel_time, travel_bounds)
-
-# -------------------------------
-# Color Mapping for Friction
-# -------------------------------
-@st.cache_data
-def generate_friction_image(data, bounds):
-    friction_breaks = [0, 0.001, 0.01, 0.1, 0.5, 1.0, 2.0, 5.0, np.inf]
-    friction_colors = [(0, 104, 55), (49, 163, 84), (120, 198, 121), (194, 230, 153), (253, 174, 97), (244, 109, 67), (165, 0, 38), (128, 0, 38)]
-    rgb = generate_colors(data, friction_breaks, friction_colors)
-    png_path = 'friction_surface_colored.png'
-    Image.fromarray(rgb).save(png_path)
-    return png_path, [[bounds.bottom, bounds.left], [bounds.top, bounds.right]]
-
-friction_png_path, friction_image_bounds = generate_friction_image(friction_data, friction_bounds)
-
-# -------------------------------
 # Create Folium Map
 # -------------------------------
 if st.button("Render Map"):
     st.subheader("Interactive Map")
-    center_lat = (travel_bounds.bottom + travel_bounds.top) / 2
-    center_lon = (travel_bounds.left + travel_bounds.right) / 2
+    center_lat = (travel_bounds[1] + travel_bounds[3]) / 2
+    center_lon = (travel_bounds[0] + travel_bounds[2]) / 2
     m = folium.Map(location=[center_lat, center_lon], zoom_start=7, tiles="CartoDB Positron")
 
     # Add Roads Layer
