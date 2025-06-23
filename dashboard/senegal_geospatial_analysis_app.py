@@ -1,19 +1,3 @@
-"""
-Streamlit application to visualize travel time, friction surfaces, farmgate prices, and retail prices in Senegal,
-overlaying market locations and roads. Allows filtering by year and month.
-Inputs:
-- Travel time GeoTIFF: Accessibility to cities (minutes)
-- Friction GeoTIFF: Travel speed friction surface (min/m)
-- Markets GeoJSON: Market locations
-- Roads GeoJSON: Filtered road network
-- Farmgate prices Excel: Commodity prices by region (sheet: Farmgate prices Senegal)
-- Retail prices Excel: Commodity prices by market (sheet: Retails Price Senegal)
-Outputs:
-- Interactive Folium map
-- Histogram of travel times
-- Summary statistics and percentiles
-"""
-
 import os
 import sys
 import json
@@ -55,7 +39,7 @@ st.set_page_config(page_title="Senegal Agrifood Geospatial Analysis", layout="wi
 st.title("Senegal Agrifood Geospatial Analysis")
 st.markdown("""
 This app visualizes travel time to cities, friction surfaces, farmgate prices, retail prices, markets, and roads in Senegal.
-Use the sidebar to select year and month for price data and toggle map layers.
+Use the sidebar to select year, month, and commodities for price data and toggle map layers.
 """)
 
 # -------------------------------
@@ -74,7 +58,6 @@ except rasterio.errors.RasterioIOError as e:
 
 # Mask nodata values
 data = np.ma.masked_equal(travel_time, nodata) if nodata is not None else np.ma.masked_invalid(travel_time)
-
 
 # -------------------------------
 # 5. Load and Process Friction Raster
@@ -165,7 +148,7 @@ if invalid_retail_coords.any():
     st.warning(f"Found {invalid_retail_coords.sum()} rows with invalid coordinates in retail prices")
 
 # -------------------------------
-# 9. Year and Month Selection
+# 9. Year, Month, and Commodity Selection
 # -------------------------------
 st.sidebar.header("Filter Price Data")
 # Find common years
@@ -208,16 +191,25 @@ if selected_month:
     prices_df = prices_df[prices_df['Month'] == selected_month]
     retail_df = retail_df[retail_df['Month'] == selected_month]
 
+# Commodity Filter
+commodities = sorted(list(set(prices_df['commodity_english'].unique()) | set(retail_df['commodity'].unique())))
+selected_commodities = st.sidebar.multiselect("Select Commodities", commodities, default=commodities)
+
 # Group by region/market and commodity, take the most recent price
 if not prices_df.empty:
     prices_df['Date'] = pd.to_datetime(prices_df[['Year', 'Month']].assign(day=1))
     latest_farmgate_prices = prices_df.sort_values('Date').groupby(['Régions Name', 'Commodity']).last().reset_index()
+    if selected_commodities:
+        latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_english'].isin(selected_commodities)]
 else:
     latest_farmgate_prices = pd.DataFrame()
     st.warning("No farmgate price data available for the selected period")
+
 if not retail_df.empty:
     retail_df['Date'] = pd.to_datetime(retail_df[['Year', 'Month']].assign(day=1))
     latest_retail_prices = retail_df.sort_values('Date').groupby(['market', 'commodity']).last().reset_index()
+    if selected_commodities:
+        latest_retail_prices = latest_retail_prices[latest_retail_prices['commodity'].isin(selected_commodities)]
 else:
     latest_retail_prices = pd.DataFrame()
     st.warning("No retail price data available for the selected period")
