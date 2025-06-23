@@ -10,6 +10,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 from branca.element import Template, MacroElement
 import plotly.express as px
+import plotly.graph_objects as go
 import uuid
 
 # -------------------------------
@@ -212,7 +213,7 @@ def main():
 
     if travel_time is None or friction_data is None:
         st.error("Failed to load raster data. Please check the files and try again.")
-        st.stop()
+        return
 
     # Generate raster images
     travel_png_path, travel_image_bounds = generate_travel_image(travel_time, travel_bounds)
@@ -240,7 +241,7 @@ def main():
         common_years = sorted(list(set(prices_df['Year']).intersection(set(retail_df['Year'])))) if not prices_df.empty and not retail_df.empty else []
         if not common_years:
             st.error("No common years found between farmgate and retail data. Please upload a valid Excel file.")
-            st.stop()
+            return
         latest_year = max(common_years) if common_years else None
         selected_year = st.sidebar.selectbox("Select Year", common_years, index=common_years.index(latest_year) if latest_year else 0, key="year_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
 
@@ -267,7 +268,7 @@ def main():
             commodity_options = sorted(commodity_options, key=lambda x: commodity_id_to_name[x])
         if not commodity_options:
             st.error("No commodities found in both farmgate and retail datasets with common commodity IDs. Please check your data.")
-            st.stop()
+            return
         # Display commodity names but store IDs
         selected_commodity_ids = st.sidebar.multiselect(
             "Select Commodities",
@@ -435,11 +436,11 @@ def main():
                 <div style="background:#006837;width:20px;height:20px;display:inline-block;"></div> ≤ 0.001<br>
                 <div style="background:#31a354;width:20px;height:20px;display:inline-block;"></div> ≤ 0.01<br>
                 <div style="background:#78c679;width:20px;height:20px;display:inline-block;"></div> ≤ 0.1<br>
-                <div style="background:#c2e699;width:20px;height:20pxdisplay:inline-block;"></div> ≤ 0.5<br>
+                <div style="background:#c2e699;width:20px;height:20px;display:inline-block;"></div> ≤ 0.5<br>
                 <div style="background:#fdae61;width:20px;height:20px;display:inline-block;"></div> ≤ 1.0<br>
-                <div style="background:#f46d43;width:20px;height:20pxdisplay:inline-block;"></div> ≤ 2.0<br>
-                <div style="background:#a50026;width:20px;color:white;height:20px;display:inline-block;"></div> ≤ 5.0<br>
-                <div style="background:#800026;width:20px;color:white;height:20pxdisplay:inline;"></div> > 0.5</div></div>
+                <div style="background:#f46d43;width:20px;height:20px;display:inline-block;"></div> ≤ 2.0<br>
+                <div style="background:#a50026;width:20px;height:20px;display:inline-block;"></div> ≤ 5.0<br>
+                <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> > 5.0</div></div>
                 {% endmacro %}
                 """
                 friction_legend = MacroElement()
@@ -449,11 +450,11 @@ def main():
             # Add MiniMap
             MiniMap(tiles='OpenStreetMap', position='bottomleft').add_to(m)
 
-            folium.LayerControl().add_to(m)
+            folium.LayerControl(collapsed=False).add_to(m)
             with st.spinner("Rendering map..."):
                 st_folium(m, width=1200, height=600, key="folium_map")
         except Exception as e:
-            st.error(f"Failed to render map: {e}. Try different filters or check data.")
+            st.error(f"Failed to render map: {e}. Please check data or try different filters.")
 
     with tab2:
         st.subheader("Data Summary")
@@ -487,53 +488,75 @@ def main():
 
     with tab3:
         st.subheader("Price Trends")
-        if not prices_df.empty and commodity_options:
-            st.markdown("### Farmgate Price Trends")
+        if not prices_df.empty and not retail_df.empty and commodity_options:
+            st.markdown("### Farmgate and Retail Price Trends")
             selected_commodity_id = st.selectbox(
-                "Select Commodity for Farmgate Trend",
+                "Select Commodity",
                 options=commodity_options,
-                format_func=lambda x: commodity_id_to_name.get(x, str(x))
+                format_func=lambda x: commodity_id_to_name.get(x, str(x)),
+                key="trend_commodity_select"
             )
             try:
-                trend_data = prices_df[prices_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
-                if trend_data.empty:
-                    st.warning(f"No trend data available for {commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)}.")
-                else:
-                    trend_data['Date'] = pd.to_datetime(trend_data[['Year', 'Month']].assign(day=1), errors='coerce')
-                    if trend_data['Date'].isna().any():
-                        st.warning("Some dates could not be parsed. Skipping invalid entries.")
-                        trend_data = trend_data.dropna(subset=['Date'])
-                    if not trend_data.empty:
-                        fig = px.line(trend_data, x='Date', y='Price', title=f"{commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)} Farmgate Price Trend")
-                        st.plotly_chart(fig)
-                    else:
-                        st.warning("No valid trend data after processing.")
-            except Exception as e:
-                st.error(f"Failed to generate farmgate price trend: {e}")
+                # Process farmgate trends
+                farmgate_trend = prices_df[prices_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
+                if not farmgate_trend.empty:
+                    farmgate_trend['Date'] = pd.to_datetime(farmgate_trend[['Year', 'Month']].assign(day=1), errors='coerce')
+                    farmgate_trend = farmgate_trend.dropna(subset=['Date'])
+                    farmgate_trend['Price Type'] = 'Farmgate'
 
-        if not retail_df.empty and commodity_options:
-            st.markdown("### Retail Price Trends")
-            selected_commodity_id = st.selectbox(
-                "Select Commodity for Retail Trend",
-                options=commodity_options,
-                format_func=lambda x: commodity_id_to_name.get(x, str(x))
-            )
-            try:
-                trend_data = retail_df[retail_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
-                if trend_data.empty:
+                # Process retail trends
+                retail_trend = retail_df[retail_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
+                if not retail_trend.empty:
+                    retail_trend['Date'] = pd.to_datetime(retail_trend[['Year', 'Month']].assign(day=1), errors='coerce')
+                    retail_trend = retail_trend.dropna(subset=['Date'])
+                    retail_trend['Price Type'] = 'Retail'
+
+                # Combine trends
+                combined_trend = pd.concat([farmgate_trend, retail_trend], ignore_index=True) if not farmgate_trend.empty or not retail_trend.empty else pd.DataFrame()
+
+                if combined_trend.empty:
                     st.warning(f"No trend data available for {commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)}.")
                 else:
-                    trend_data['Date'] = pd.to_datetime(trend_data[['Year', 'Month']].assign(day=1), errors='coerce')
-                    if trend_data['Date'].isna().any():
-                        st.warning("Some dates could not be parsed. Skipping invalid entries.")
-                        trend_data = trend_data.dropna(subset=['Date'])
-                    if not trend_data.empty:
-                        fig = px.line(trend_data, x='Date', y='Price', title=f"{commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)} Retail Price Trend")
-                        st.plotly_chart(fig)
-                    else:
-                        st.warning("No valid trend data after processing.")
+                    # Create Plotly figure
+                    fig = go.Figure()
+                    if 'Farmgate' in combined_trend['Price Type'].values:
+                        fig.add_trace(go.Scatter(
+                            x=combined_trend[combined_trend['Price Type'] == 'Farmgate']['Date'],
+                            y=combined_trend[combined_trend['Price Type'] == 'Farmgate']['Price'],
+                            mode='lines+markers',
+                            name='Farmgate',
+                            line=dict(color='#2ca02c', width=2),
+                            marker=dict(size=6),
+                            hovertemplate='%{x|%b %Y}<br>Price: %{y:.2f}<br>Type: Farmgate'
+                        ))
+                    if 'Retail' in combined_trend['Price Type'].values:
+                        fig.add_trace(go.Scatter(
+                            x=combined_trend[combined_trend['Price Type'] == 'Retail']['Date'],
+                            y=combined_trend[combined_trend['Price Type'] == 'Retail']['Price'],
+                            mode='lines+markers',
+                            name='Retail',
+                            line=dict(color='#9467bd', width=2),
+                            marker=dict(size=6),
+                            hovertemplate='%{x|%b %Y}<br>Price: %{y:.2f}<br>Type: Retail'
+                        ))
+
+                    # Customize layout
+                    fig.update_layout(
+                        title=f"{commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)} Price Trends",
+                        xaxis_title="Date",
+                        yaxis_title="Average Price (Unit2)",
+                        font=dict(family="Roboto, sans-serif", size=12),
+                        hovermode="x unified",
+                        showlegend=True,
+                        template="plotly_white",
+                        xaxis=dict(showgrid=True, gridcolor='rgba(200,200,200,0.2)'),
+                        yaxis=dict(showgrid=True, gridcolor='rgba(200,200,200,0.2)')
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
             except Exception as e:
-                st.error(f"Failed to generate retail price trend: {e}")
+                st.error(f"Failed to generate price trends: {e}")
+        else:
+            st.warning("No data available for price trends. Please check your data.")
 
     # Footer
     st.markdown("""
