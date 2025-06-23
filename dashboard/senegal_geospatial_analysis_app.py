@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 import folium
-from folium.plugins import FastMarkerCluster, MiniMap
+from folium.plugins import MarkerCluster, MiniMap
 import streamlit as st
 from streamlit_folium import st_folium
 from branca.element import Template, MacroElement
@@ -113,6 +113,11 @@ def load_price_data(file_path):
         if prices_df.empty:
             st.warning("Farmgate prices Excel is empty")
             return pd.DataFrame()
+        # Ensure numeric types for critical columns
+        prices_df['Price'] = pd.to_numeric(prices_df['Price'], errors='coerce')
+        prices_df['Year'] = pd.to_numeric(prices_df['Year'], errors='coerce')
+        prices_df['Month'] = pd.to_numeric(prices_df['Month'], errors='coerce')
+        prices_df = prices_df.dropna(subset=['Price', 'Year', 'Month', 'Régions - Latitude', 'Régions - Longitude'])
         return prices_df
     except Exception as e:
         st.error(f"Error reading farmgate prices file {file_path}: {e}")
@@ -125,8 +130,12 @@ def load_retail_data(file_path):
         if retail_df.empty:
             st.warning("Retail prices Excel is empty")
             return pd.DataFrame()
-        # Standardize column names
+        # Standardize column names and ensure numeric types
         retail_df = retail_df.rename(columns={'price': 'Price'})
+        retail_df['Price'] = pd.to_numeric(retail_df['Price'], errors='coerce')
+        retail_df['Year'] = pd.to_numeric(retail_df['Year'], errors='coerce')
+        retail_df['Month'] = pd.to_numeric(retail_df['Month'], errors='coerce')
+        retail_df = retail_df.dropna(subset=['Price', 'Year', 'Month', 'latitude', 'longitude'])
         return retail_df
     except Exception as e:
         st.error(f"Error reading retail prices file {file_path}: {e}")
@@ -259,7 +268,8 @@ def main():
                 filtered_farmgate = prices_df[prices_df['Year'] == selected_year] if selected_year else prices_df
                 if selected_month:
                     filtered_farmgate = filtered_farmgate[filtered_farmgate['Month'] == selected_month]
-                filtered_farmgate['Date'] = pd.to_datetime(filtered_farmgate[['Year', 'Month']].assign(day=1))
+                filtered_farmgate['Date'] = pd.to_datetime(filtered_farmgate[['Year', 'Month']].assign(day=1), errors='coerce')
+                filtered_farmgate = filtered_farmgate.dropna(subset=['Date'])
                 latest_farmgate_prices = filtered_farmgate.sort_values('Date').groupby(['Régions Name', 'Commodity']).last().reset_index()
                 if selected_commodities:
                     latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_english'].isin(selected_commodities)]
@@ -271,7 +281,8 @@ def main():
                 filtered_retail = retail_df[retail_df['Year'] == selected_year] if selected_year else retail_df
                 if selected_month:
                     filtered_retail = filtered_retail[filtered_retail['Month'] == selected_month]
-                filtered_retail['Date'] = pd.to_datetime(filtered_retail[['Year', 'Month']].assign(day=1))
+                filtered_retail['Date'] = pd.to_datetime(filtered_retail[['Year', 'Month']].assign(day=1), errors='coerce')
+                filtered_retail = filtered_retail.dropna(subset=['Date'])
                 latest_retail_prices = filtered_retail.sort_values('Date').groupby(['market', 'commodity']).last().reset_index()
                 if selected_commodities:
                     latest_retail_prices = latest_retail_prices[latest_retail_prices['commodity'].isin(selected_commodities)]
@@ -300,6 +311,7 @@ def main():
             # Add Markets Layer
             if show_markets and markets:
                 market_group = folium.FeatureGroup(name="Markets", show=True)
+                valid_markets = 0
                 for feature in markets.get('features', []):
                     if feature['geometry']['type'] == 'Point' and all(isinstance(c, (int, float)) for c in feature['geometry']['coordinates']):
                         coords = feature['geometry']['coordinates'][::-1]
@@ -309,11 +321,16 @@ def main():
                             popup=popup,
                             icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
                         ).add_to(market_group)
-                market_group.add_to(m)
+                        valid_markets += 1
+                if valid_markets == 0:
+                    st.warning("No valid market locations found.")
+                else:
+                    market_group.add_to(m)
 
             # Add Farmgate Prices Layer
             if show_farmgate and not st.session_state.latest_farmgate_prices.empty:
-                farmgate_cluster = FastMarkerCluster(name="Farmgate Prices").add_to(m)
+                farmgate_cluster = MarkerCluster(name="Farmgate Prices").add_to(m)
+                valid_farmgate_markers = 0
                 for _, row in st.session_state.latest_farmgate_prices.iterrows():
                     if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
                         continue
@@ -323,10 +340,14 @@ def main():
                         popup=folium.Popup(popup_text, max_width=250),
                         icon=folium.Icon(color='green', icon='tractor', prefix='fa')
                     ).add_to(farmgate_cluster)
+                    valid_farmgate_markers += 1
+                if valid_farmgate_markers == 0:
+                    st.warning("No valid farmgate price locations found for the selected filters.")
 
             # Add Retail Prices Layer
             if show_retail and not st.session_state.latest_retail_prices.empty:
-                retail_cluster = FastMarkerCluster(name="Retail Prices").add_to(m)
+                retail_cluster = MarkerCluster(name="Retail Prices").add_to(m)
+                valid_retail_markers = 0
                 for _, row in st.session_state.latest_retail_prices.iterrows():
                     if pd.isna(row['latitude']) or pd.isna(row['longitude']):
                         continue
@@ -336,6 +357,9 @@ def main():
                         popup=folium.Popup(popup_text, max_width=250),
                         icon=folium.Icon(color='purple', icon='shopping-basket', prefix='fa')
                     ).add_to(retail_cluster)
+                    valid_retail_markers += 1
+                if valid_retail_markers == 0:
+                    st.warning("No valid retail price locations found for the selected filters.")
 
             # Add Raster Overlays
             if show_travel:
@@ -483,5 +507,5 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
