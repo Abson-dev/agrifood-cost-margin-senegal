@@ -288,12 +288,12 @@ def main():
 
         # Layer toggles
         st.sidebar.header("Map Layers")
-        show_travel = st.sidebar.checkbox("Travel Time", value=True)
-        show_friction = st.sidebar.checkbox("Friction Surface", value=True)
-        show_roads = st.sidebar.checkbox("Roads", value=True)
-        show_markets = st.sidebar.checkbox("Markets", value=True)
-        show_farmgate = st.sidebar.checkbox("Farmgate Prices", value=True)
-        show_retail = st.sidebar.checkbox("Retail Prices", value=True)
+        show_travel = st.sidebar.checkbox("Travel Time", value=False)
+        show_friction = st.sidebar.checkbox("Friction Surface", value=False)
+        show_roads = st.sidebar.checkbox("Roads", value=False)
+        show_markets = st.sidebar.checkbox("Markets", value=False)
+        show_farmgate = st.sidebar.checkbox("Farmgate Prices", value=False)
+        show_retail = st.sidebar.checkbox("Retail Prices", value=False)
 
         # Update map data
         if st.session_state.map_data_updated or st.session_state.latest_farmgate_prices.empty or st.session_state.latest_retail_prices.empty:
