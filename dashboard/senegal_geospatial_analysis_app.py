@@ -37,6 +37,10 @@ markets_path = os.path.join(BASE_DIR, 'markets_from_excel.geojson')
 roads_filtered_path = os.path.join(BASE_DIR, 'roads_filtered.geojson')
 prices_path = os.path.join(BASE_DIR, 'merged_farmgate_retail_prices_senegal.xlsx')
 
+# Debug: Print file paths
+st.write(f"Markets GeoJSON path: {markets_path}")
+st.write(f"Roads GeoJSON path: {roads_filtered_path}")
+
 # -------------------------------
 # Helper Function: RGB Conversion
 # -------------------------------
@@ -75,38 +79,7 @@ except rasterio.errors.RasterioIOError as e:
 # Mask nodata values
 data = np.ma.masked_equal(travel_time, nodata) if nodata is not None else np.ma.masked_invalid(travel_time)
 
-# -------------------------------
-# 2. Summary Statistics
-# -------------------------------
-with st.expander("Travel Time Summary Statistics"):
-    st.write(f"**Min:** {data.min():.2f} min")
-    st.write(f"**Max:** {data.max():.2f} min")
-    st.write(f"**Mean:** {data.mean():.2f} min")
-    st.write(f"**Std Dev:** {data.std():.2f} min")
 
-# -------------------------------
-# 3. Percentiles
-# -------------------------------
-percentiles = np.percentile(data.compressed(), [5, 25, 50, 75, 95])
-with st.expander("Travel Time Percentiles"):
-    st.write(f"**5th:** {percentiles[0]:.2f} min")
-    st.write(f"**25th:** {percentiles[1]:.2f} min")
-    st.write(f"**50th (median):** {percentiles[2]:.2f} min")
-    st.write(f"**75th:** {percentiles[3]:.2f} min")
-    st.write(f"**95th:** {percentiles[4]:.2f} min")
-
-# -------------------------------
-# 4. Histogram
-# -------------------------------
-st.subheader("Histogram of Travel Time to Cities")
-fig, ax = plt.subplots(figsize=(10, 5))
-ax.hist(data.compressed(), bins=50, color='skyblue', edgecolor='black')
-ax.set_title('Histogram of Travel Time to Cities (min)')
-ax.set_xlabel('Travel Time (minutes)')
-ax.set_ylabel('Count')
-ax.grid(True)
-plt.tight_layout()
-st.pyplot(fig)
 
 # -------------------------------
 # 5. Load and Process Friction Raster
@@ -125,15 +98,30 @@ friction_data = np.ma.masked_equal(friction_data, nodata) if nodata else np.ma.m
 # -------------------------------
 # 6. Load GeoJSON Files
 # -------------------------------
+markets = None
+roads_filtered = None
 try:
+    # Check if markets GeoJSON exists
+    if not os.path.exists(markets_path):
+        st.error(f"Markets GeoJSON file not found: {markets_path}")
+        sys.exit(1)
     markets = gpd.read_file(markets_path)
     if markets.empty:
         st.warning("Markets GeoJSON is empty")
+except Exception as e:
+    st.error(f"Error reading markets GeoJSON file {markets_path}: {e}")
+    sys.exit(1)
+
+try:
+    # Check if roads GeoJSON exists
+    if not os.path.exists(roads_filtered_path):
+        st.error(f"Roads GeoJSON file not found: {roads_filtered_path}")
+        sys.exit(1)
     roads_filtered = gpd.read_file(roads_filtered_path)
     if roads_filtered.empty:
         st.warning("Roads GeoJSON is empty")
 except Exception as e:
-    st.error(f"Error reading GeoJSON files: {e}")
+    st.error(f"Error reading roads GeoJSON file {roads_filtered_path}: {e}")
     sys.exit(1)
 
 # -------------------------------
@@ -286,25 +274,27 @@ center_lon = (travel_bounds.left + travel_bounds.right) / 2
 m = folium.Map(location=[center_lat, center_lon], zoom_start=7, tiles="CartoDB Positron")
 
 # Add Roads Layer
-folium.GeoJson(
-    roads_filtered,
-    name="Roads",
-    style_function=lambda x: {
-        'color': 'blue',
-        'weight': 1,
-        'opacity': 0.7
-    }
-).add_to(m)
+if roads_filtered is not None:
+    folium.GeoJson(
+        roads_filtered,
+        name="Roads",
+        style_function=lambda x: {
+            'color': 'blue',
+            'weight': 1,
+            'opacity': 0.7
+        }
+    ).add_to(m)
 
 # Add Markets Layer
-market_group = folium.FeatureGroup(name="Markets", show=True)
-for _, row in markets.iterrows():
-    folium.Marker(
-        location=[row.geometry.y, row.geometry.x],
-        popup=row['market'],
-        icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
-    ).add_to(market_group)
-market_group.add_to(m)
+if markets is not None:
+    market_group = folium.FeatureGroup(name="Markets", show=True)
+    for _, row in markets.iterrows():
+        folium.Marker(
+            location=[row.geometry.y, row.geometry.x],
+            popup=row['market'],
+            icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
+        ).add_to(market_group)
+    market_group.add_to(m)
 
 # Add Farmgate Prices Layer
 farmgate_group = folium.FeatureGroup(name="Farmgate Prices", show=True)
