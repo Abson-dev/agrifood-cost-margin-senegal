@@ -1,5 +1,4 @@
 import os
-import sys
 import json
 import rasterio
 import numpy as np
@@ -23,12 +22,18 @@ roads_filtered_path = os.path.join(BASE_DIR, 'roads_filtered.geojson')
 prices_path = os.path.join(BASE_DIR, 'merged_farmgate_retail_prices_senegal.xlsx')
 
 # Initialize session state
-if 'map_rendered' not in st.session_state:
-    st.session_state.map_rendered = False
+if 'map_data_updated' not in st.session_state:
+    st.session_state.map_data_updated = False
 if 'latest_farmgate_prices' not in st.session_state:
     st.session_state.latest_farmgate_prices = pd.DataFrame()
 if 'latest_retail_prices' not in st.session_state:
     st.session_state.latest_retail_prices = pd.DataFrame()
+if 'selected_year' not in st.session_state:
+    st.session_state.selected_year = None
+if 'selected_month' not in st.session_state:
+    st.session_state.selected_month = None
+if 'selected_commodities' not in st.session_state:
+    st.session_state.selected_commodities = []
 
 # -------------------------------
 # Helper Function: RGB Conversion
@@ -47,10 +52,9 @@ def generate_colors(data, breaks, colors):
 @st.cache_data
 def load_and_process_raster(file_path):
     with rasterio.open(file_path) as src:
-        # Increase downsampling to reduce computation time
         data = src.read(1, out_shape=(1, src.height // 4, src.width // 4), resampling=rasterio.enums.Resampling.bilinear)
         nodata = src.nodata
-        bounds = (src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top)  # Convert to hashable tuple
+        bounds = (src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top)
     return np.ma.masked_equal(data, nodata) if nodata else np.ma.masked_invalid(data), bounds
 
 travel_time, travel_bounds = load_and_process_raster(raster_path)
@@ -150,29 +154,27 @@ if not retail_df.empty:
         st.warning(f"Found {invalid_retail_coords.sum()} rows with invalid coordinates in retail prices")
 
 # -------------------------------
-# Filter Data
+# Filter Data and Render Map
 # -------------------------------
 st.sidebar.header("Filter Price Data")
 common_years = sorted(list(set(prices_df['Year']).intersection(set(retail_df['Year'])))) if not prices_df.empty and not retail_df.empty else []
-selected_year = st.sidebar.selectbox("Select Year", common_years, index=len(common_years)-1) if common_years else None
+selected_year = st.sidebar.selectbox("Select Year", common_years, index=len(common_years)-1, key="year_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
 if not common_years:
     st.sidebar.warning("No common years found between farmgate and retail prices.")
 
-# Map numeric months to names
 month_names = {1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
                7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"}
 available_months = sorted(list(set(prices_df['Month'].unique()) | set(retail_df['Month'].unique()))) if not prices_df.empty or not retail_df.empty else []
-selected_month_name = st.sidebar.selectbox("Select Month", [month_names.get(m, str(m)) for m in available_months], index=len(available_months)-1) if available_months else None
+selected_month_name = st.sidebar.selectbox("Select Month", [month_names.get(m, str(m)) for m in available_months], index=len(available_months)-1, key="month_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
 selected_month = next((k for k, v in month_names.items() if v == selected_month_name), selected_month_name) if selected_month_name else None
 if not available_months:
     st.sidebar.error("No months available for the selected year(s).")
 
 commodities = sorted(list(set(prices_df['commodity_english'].unique()) | set(retail_df['commodity'].unique()))) if not prices_df.empty or not retail_df.empty else []
-selected_commodities = st.sidebar.multiselect("Select Commodities", commodities, default=commodities) if commodities else []
+selected_commodities = st.sidebar.multiselect("Select Commodities", commodities, default=commodities, key="commodity_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
 
-# Initial render or reapply filters
-if st.sidebar.button("Apply Filters and Render Map") or not st.session_state.map_rendered:
-    # Filter datasets
+# Update map data when filters change or on initial load
+if st.session_state.map_data_updated or not st.session_state.latest_farmgate_prices.empty or not st.session_state.latest_retail_prices.empty:
     latest_farmgate_prices = pd.DataFrame()
     latest_retail_prices = pd.DataFrame()
     if not prices_df.empty:
@@ -200,7 +202,7 @@ if st.sidebar.button("Apply Filters and Render Map") or not st.session_state.map
     # Update session state
     st.session_state.latest_farmgate_prices = latest_farmgate_prices
     st.session_state.latest_retail_prices = latest_retail_prices
-    st.session_state.map_rendered = True
+    st.session_state.map_data_updated = False
 
     # Render Map
     st.subheader("Interactive Map")
@@ -278,9 +280,3 @@ if st.sidebar.button("Apply Filters and Render Map") or not st.session_state.map
     folium.LayerControl().add_to(m)
     with st.spinner("Rendering map..."):
         st_folium(m, width=1200, height=600)
-else:
-    # Display the last rendered map if available
-    if st.session_state.map_rendered:
-        st.subheader("Interactive Map")
-        st_folium(folium.Map(), width=1200, height=600)  # Placeholder to retain space; actual map data is lost on rerun
-        st.warning("Map persists from last render. Click 'Apply Filters and Render Map' to update.")
