@@ -34,6 +34,8 @@ if 'latest_retail_prices' not in st.session_state:
     st.session_state.latest_retail_prices = pd.DataFrame()
 if 'file_paths' not in st.session_state:
     st.session_state.file_paths = DEFAULT_FILES.copy()
+if 'map_render_key' not in st.session_state:
+    st.session_state.map_render_key = 0
 
 # -------------------------------
 # Helper Functions
@@ -326,174 +328,179 @@ def main():
             st.session_state.latest_farmgate_prices = latest_farmgate_prices
             st.session_state.latest_retail_prices = latest_retail_prices
             st.session_state.map_data_updated = False
+            st.session_state.map_render_key += 1  # Increment key to force re-render
 
         # Render Map
-        try:
-            # Calculate unified bounds from travel and friction rasters
-            min_lat = min(travel_bounds[1], friction_bounds[1])
-            max_lat = max(travel_bounds[3], friction_bounds[3])
-            min_lon = min(travel_bounds[0], friction_bounds[0])
-            max_lon = max(travel_bounds[2], friction_bounds[2])
-
-            # Include market and price data bounds if available
-            if not prices_df.empty:
-                farmgate_lats = prices_df['Régions - Latitude'].dropna()
-                farmgate_lons = prices_df['Régions - Longitude'].dropna()
-                min_lat = min(min_lat, farmgate_lats.min()) if not farmgate_lats.empty else min_lat
-                max_lat = max(max_lat, farmgate_lats.max()) if not farmgate_lats.empty else max_lat
-                min_lon = min(min_lon, farmgate_lons.min()) if not farmgate_lons.empty else min_lon
-                max_lon = max(max_lon, farmgate_lons.max()) if not farmgate_lons.empty else max_lon
-            if not retail_df.empty:
-                retail_lats = retail_df['latitude'].dropna()
-                retail_lons = retail_df['longitude'].dropna()
-                min_lat = min(min_lat, retail_lats.min()) if not retail_lats.empty else min_lat
-                max_lat = max(max_lat, retail_lats.max()) if not retail_lats.empty else max_lat
-                min_lon = min(min_lon, retail_lons.min()) if not retail_lons.empty else min_lon
-                max_lon = max(max_lon, retail_lons.max()) if not retail_lons.empty else max_lon
-            if markets:
-                for feature in markets.get('features', []):
-                    if feature['geometry']['type'] == 'Point':
-                        lon, lat = feature['geometry']['coordinates']
-                        min_lat = min(min_lat, lat)
-                        max_lat = max(max_lat, lat)
-                        min_lon = min(min_lon, lon)
-                        max_lon = max(max_lon, lon)
-
-            # Create map and fit to bounds
-            m = folium.Map(location=[(min_lat + max_lat) / 2, (min_lon + max_lon) / 2], zoom_start=6, tiles="CartoDB Positron")
-            folium.FitBounds([
-                [min_lat, min_lon],
-                [max_lat, max_lon]
-            ]).add_to(m)
-
-            # Add Roads Layer
-            if show_roads and roads_filtered:
-                folium.GeoJson(
-                    roads_filtered,
-                    name="Roads",
-                    style_function=lambda x: {'color': '#3b82f6', 'weight': 1, 'opacity': 0.7}
-                ).add_to(m)
-
-            # Add Markets Layer
-            if show_markets and markets:
-                market_group = folium.FeatureGroup(name="Markets", show=True)
-                valid_markets = 0
-                for feature in markets.get('features', []):
-                    if feature['geometry']['type'] == 'Point' and all(isinstance(c, (int, float)) for c in feature['geometry']['coordinates']):
-                        coords = feature['geometry']['coordinates'][::-1]
-                        popup = feature['properties'].get('market', 'Unknown Market')
-                        folium.Marker(
-                            location=coords,
-                            popup=popup,
-                            icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
-                        ).add_to(market_group)
-                        valid_markets += 1
-                if valid_markets == 0:
-                    st.warning("No valid market locations found.")
-                else:
-                    market_group.add_to(m)
-
-            # Add Farmgate Prices Layer
-            if show_farmgate and not st.session_state.latest_farmgate_prices.empty:
-                farmgate_cluster = MarkerCluster(name="Farmgate Prices").add_to(m)
-                valid_farmgate_markers = 0
-                for _, row in st.session_state.latest_farmgate_prices.iterrows():
-                    if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
-                        continue
-                    popup_text = f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
-                    folium.Marker(
-                        location=[row['Régions - Latitude'], row['Régions - Longitude']],
-                        popup=folium.Popup(popup_text, max_width=250),
-                        icon=folium.Icon(color='green', icon='tractor', prefix='fa')
-                    ).add_to(farmgate_cluster)
-                    valid_farmgate_markers += 1
-                if valid_farmgate_markers == 0:
-                    st.warning("No valid farmgate price locations found for the selected filters.")
-
-            # Add Retail Prices Layer
-            if show_retail and not st.session_state.latest_retail_prices.empty:
-                retail_cluster = MarkerCluster(name="Retail Prices").add_to(m)
-                valid_retail_markers = 0
-                for _, row in st.session_state.latest_retail_prices.iterrows():
-                    if pd.isna(row['latitude']) or pd.isna(row['longitude']):
-                        continue
-                    popup_text = f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
-                    folium.Marker(
-                        location=[row['latitude'], row['longitude']],
-                        popup=folium.Popup(popup_text, max_width=250),
-                        icon=folium.Icon(color='purple', icon='shopping-basket', prefix='fa')
-                    ).add_to(retail_cluster)
-                    valid_retail_markers += 1
-                if valid_retail_markers == 0:
-                    st.warning("No valid retail price locations found for the selected filters.")
-
-            # Add Raster Overlays
-            if show_travel:
-                folium.raster_layers.ImageOverlay(
-                    name="Travel Time",
-                    image=travel_png_path,
-                    bounds=travel_image_bounds,
-                    opacity=0.6,
-                    interactive=True,
-                    cross_origin=False
-                ).add_to(m)
-            if show_friction:
-                folium.raster_layers.ImageOverlay(
-                    name="Friction Surface (min/m)",
-                    image=friction_png_path,
-                    bounds=friction_image_bounds,
-                    opacity=0.7,
-                    interactive=True,
-                    cross_origin=False
-                ).add_to(m)
-
-            # Add Legends with adjusted positioning
-            if show_travel:
-                travel_legend_html = """
-                {% macro html(this, kwargs) %}
-                <div style="position: fixed; bottom: 2%; left: 2%; width: 180px; height: 230px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
-                <b>Travel Time (min)</b><br><div style="margin-top:10px;">
-                <div style="background:#ffffcc;width:20px;height:20px;display:inline-block;"></div> 0–10<br>
-                <div style="background:#ffeda0;width:20px;height:20px;display:inline-block;"></div> 10–30<br>
-                <div style="background:#feb24c;width:20px;height:20px;display:inline-block;"></div> 30–60<br>
-                <div style="background:#fd8d3c;width:20px;height:20px;display:inline-block;"></div> 60–120<br>
-                <div style="background:#f03b20;width:20px;height:20px;display:inline-block;"></div> 120–240<br>
-                <div style="background:#bd0026;width:20px;height:20px;display:inline-block;"></div> 240–1440<br>
-                <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> >1440</div></div>
-                {% endmacro %}
-                """
-                travel_legend = MacroElement()
-                travel_legend._template = Template(travel_legend_html)
-                m.get_root().add_child(travel_legend)
-
-            if show_friction:
-                friction_legend_html = """
-                {% macro html(this, kwargs) %}
-                <div style="position: fixed; bottom: 2%; right: 2%; width: 200px; height: 260px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
-                <b>Friction (min/m)</b><br><div style="margin-top:10px;">
-                <div style="background:#006837;width:20px;height:20px;display:inline-block;"></div> ≤ 0.001<br>
-                <div style="background:#31a354;width:20px;height:20px;display:inline-block;"></div> ≤ 0.01<br>
-                <div style="background:#78c679;width:20px;height:20px;display:inline-block;"></div> ≤ 0.1<br>
-                <div style="background:#c2e699;width:20px;height:20px;display:inline-block;"></div> ≤ 0.5<br>
-                <div style="background:#fdae61;width:20px;height:20px;display:inline-block;"></div> ≤ 1.0<br>
-                <div style="background:#f46d43;width:20px;height:20px;display:inline-block;"></div> ≤ 2.0<br>
-                <div style="background:#a50026;width:20px;height:20px;display:inline-block;"></div> ≤ 5.0<br>
-                <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> > 5.0</div></div>
-                {% endmacro %}
-                """
-                friction_legend = MacroElement()
-                friction_legend._template = Template(friction_legend_html)
-                m.get_root().add_child(friction_legend)
-
-            # Add MiniMap and Fullscreen
-            MiniMap(tiles='OpenStreetMap', position='bottomleft', width=150, height=150).add_to(m)
-            Fullscreen(position='topright', title='Expand', title_cancel='Exit').add_to(m)
-
-            folium.LayerControl(collapsed=False).add_to(m)
+        map_placeholder = st.empty()
+        with map_placeholder.container():
             with st.spinner("Rendering map..."):
-                st_folium(m, width=1400, height=800, key="folium_map")
-        except Exception as e:
-            st.error(f"Failed to render map: {e}. Please check data or coordinates.")
+                try:
+                    # Calculate unified bounds from travel and friction rasters
+                    min_lat = min(travel_bounds[1], friction_bounds[1])
+                    max_lat = max(travel_bounds[3], friction_bounds[3])
+                    min_lon = min(travel_bounds[0], friction_bounds[0])
+                    max_lon = max(travel_bounds[2], friction_bounds[2])
+
+                    # Include market and price data bounds if available
+                    if not prices_df.empty:
+                        farmgate_lats = prices_df['Régions - Latitude'].dropna()
+                        farmgate_lons = prices_df['Régions - Longitude'].dropna()
+                        min_lat = min(min_lat, farmgate_lats.min()) if not farmgate_lats.empty else min_lat
+                        max_lat = max(max_lat, farmgate_lats.max()) if not farmgate_lats.empty else max_lat
+                        min_lon = min(min_lon, farmgate_lons.min()) if not farmgate_lons.empty else min_lon
+                        max_lon = max(max_lon, farmgate_lons.max()) if not farmgate_lons.empty else max_lon
+                    if not retail_df.empty:
+                        retail_lats = retail_df['latitude'].dropna()
+                        retail_lons = retail_df['longitude'].dropna()
+                        min_lat = min(min_lat, retail_lats.min()) if not retail_lats.empty else min_lat
+                        max_lat = max(max_lat, retail_lats.max()) if not retail_lats.empty else max_lat
+                        min_lon = min(min_lon, retail_lons.min()) if not retail_lons.empty else min_lon
+                        max_lon = max(max_lon, retail_lons.max()) if not retail_lons.empty else max_lon
+                    if markets:
+                        for feature in markets.get('features', []):
+                            if feature['geometry']['type'] == 'Point':
+                                lon, lat = feature['geometry']['coordinates']
+                                min_lat = min(min_lat, lat)
+                                max_lat = max(max_lat, lat)
+                                min_lon = min(min_lon, lon)
+                                max_lon = max(max_lon, lon)
+
+                    # Create map and fit to bounds
+                    m = folium.Map(location=[(min_lat + max_lat) / 2, (min_lon + max_lon) / 2], zoom_start=6, tiles="CartoDB Positron")
+                    folium.FitBounds([
+                        [min_lat, min_lon],
+                        [max_lat, max_lon]
+                    ]).add_to(m)
+
+                    # Add Roads Layer
+                    if show_roads and roads_filtered:
+                        folium.GeoJson(
+                            roads_filtered,
+                            name="Roads",
+                            style_function=lambda x: {'color': '#3b82f6', 'weight': 1, 'opacity': 0.7}
+                        ).add_to(m)
+
+                    # Add Markets Layer
+                    if show_markets and markets:
+                        market_group = folium.FeatureGroup(name="Markets", show=True)
+                        valid_markets = 0
+                        for feature in markets.get('features', []):
+                            if feature['geometry']['type'] == 'Point' and all(isinstance(c, (int, float)) for c in feature['geometry']['coordinates']):
+                                coords = feature['geometry']['coordinates'][::-1]
+                                popup = feature['properties'].get('market', 'Unknown Market')
+                                folium.Marker(
+                                    location=coords,
+                                    popup=popup,
+                                    icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
+                                ).add_to(market_group)
+                                valid_markets += 1
+                        if valid_markets == 0:
+                            st.warning("No valid market locations found.")
+                        else:
+                            market_group.add_to(m)
+
+                    # Add Farmgate Prices Layer
+                    if show_farmgate and not st.session_state.latest_farmgate_prices.empty:
+                        farmgate_cluster = MarkerCluster(name="Farmgate Prices").add_to(m)
+                        valid_farmgate_markers = 0
+                        for _, row in st.session_state.latest_farmgate_prices.iterrows():
+                            if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
+                                continue
+                            popup_text = f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
+                            folium.Marker(
+                                location=[row['Régions - Latitude'], row['Régions - Longitude']],
+                                popup=folium.Popup(popup_text, max_width=250),
+                                icon=folium.Icon(color='green', icon='tractor', prefix='fa')
+                            ).add_to(farmgate_cluster)
+                            valid_farmgate_markers += 1
+                        if valid_farmgate_markers == 0:
+                            st.warning("No valid farmgate price locations found for the selected filters.")
+
+                    # Add Retail Prices Layer
+                    if show_retail and not st.session_state.latest_retail_prices.empty:
+                        retail_cluster = MarkerCluster(name="Retail Prices").add_to(m)
+                        valid_retail_markers = 0
+                        for _, row in st.session_state.latest_retail_prices.iterrows():
+                            if pd.isna(row['latitude']) or pd.isna(row['longitude']):
+                                continue
+                            popup_text = f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
+                            folium.Marker(
+                                location=[row['latitude'], row['longitude']],
+                                popup=folium.Popup(popup_text, max_width=250),
+                                icon=folium.Icon(color='purple', icon='shopping-basket', prefix='fa')
+                            ).add_to(retail_cluster)
+                            valid_retail_markers += 1
+                        if valid_retail_markers == 0:
+                            st.warning("No valid retail price locations found for the selected filters.")
+
+                    # Add Raster Overlays
+                    if show_travel:
+                        folium.raster_layers.ImageOverlay(
+                            name="Travel Time",
+                            image=travel_png_path,
+                            bounds=travel_image_bounds,
+                            opacity=0.6,
+                            interactive=True,
+                            cross_origin=False
+                        ).add_to(m)
+                    if show_friction:
+                        folium.raster_layers.ImageOverlay(
+                            name="Friction Surface (min/m)",
+                            image=friction_png_path,
+                            bounds=friction_image_bounds,
+                            opacity=0.7,
+                            interactive=True,
+                            cross_origin=False
+                        ).add_to(m)
+
+                    # Add Legends with adjusted positioning
+                    if show_travel:
+                        travel_legend_html = """
+                        {% macro html(this, kwargs) %}
+                        <div style="position: fixed; bottom: 2%; left: 2%; width: 180px; height: 230px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
+                        <b>Travel Time (min)</b><br><div style="margin-top:10px;">
+                        <div style="background:#ffffcc;width:20px;height:20px;display:inline-block;"></div> 0–10<br>
+                        <div style="background:#ffeda0;width:20px;height:20px;display:inline-block;"></div> 10–30<br>
+                        <div style="background:#feb24c;width:20px;height:20px;display:inline-block;"></div> 30–60<br>
+                        <div style="background:#fd8d3c;width:20px;height:20px;display:inline-block;"></div> 60–120<br>
+                        <div style="background:#f03b20;width:20px;height:20px;display:inline-block;"></div> 120–240<br>
+                        <div style="background:#bd0026;width:20px;height:20px;display:inline-block;"></div> 240–1440<br>
+                        <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> >1440</div></div>
+                        {% endmacro %}
+                        """
+                        travel_legend = MacroElement()
+                        travel_legend._template = Template(travel_legend_html)
+                        m.get_root().add_child(travel_legend)
+
+                    if show_friction:
+                        friction_legend_html = """
+                        {% macro html(this, kwargs) %}
+                        <div style="position: fixed; bottom: 2%; right: 2%; width: 200px; height: 260px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
+                        <b>Friction (min/m)</b><br><div style="margin-top:10px;">
+                        <div style="background:#006837;width:20px;height:20px;display:inline-block;"></div> ≤ 0.001<br>
+                        <div style="background:#31a354;width:20px;height:20px;display:inline-block;"></div> ≤ 0.01<br>
+                        <div style="background:#78c679;width:20px;height:20px;display:inline-block;"></div> ≤ 0.1<br>
+                        <div style="background:#c2e699;width:20px;height:20px;display:inline-block;"></div> ≤ 0.5<br>
+                        <div style="background:#fdae61;width:20px;height:20px;display:inline-block;"></div> ≤ 1.0<br>
+                        <div style="background:#f46d43;width:20px;height:20px;display:inline-block;"></div> ≤ 2.0<br>
+                        <div style="background:#a50026;width:20px;height:20px;display:inline-block;"></div> ≤ 5.0<br>
+                        <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> > 5.0</div></div>
+                        {% endmacro %}
+                        """
+                        friction_legend = MacroElement()
+                        friction_legend._template = Template(friction_legend_html)
+                        m.get_root().add_child(friction_legend)
+
+                    # Add MiniMap and Fullscreen
+                    MiniMap(tiles='OpenStreetMap', position='bottomleft', width=150, height=150).add_to(m)
+                    Fullscreen(position='topright', title='Expand', title_cancel='Exit').add_to(m)
+
+                    folium.LayerControl(collapsed=False).add_to(m)
+                    st_folium(m, width=1400, height=800, key=f"folium_map_{st.session_state.map_render_key}")
+                except Exception as e:
+                    st.error(f"Map rendering failed: {str(e)}. Please check data files or coordinates.")
+                finally:
+                    st.spinner(False)  # Ensure spinner is cleared
 
     with tab2:
         st.subheader("Data Summary")
