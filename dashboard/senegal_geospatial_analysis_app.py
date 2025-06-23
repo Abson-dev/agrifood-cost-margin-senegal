@@ -11,7 +11,6 @@ from streamlit_folium import st_folium
 from branca.element import Template, MacroElement
 import plotly.express as px
 import uuid
-import base64
 
 # -------------------------------
 # Configuration: File Paths
@@ -126,6 +125,8 @@ def load_retail_data(file_path):
         if retail_df.empty:
             st.warning("Retail prices Excel is empty")
             return pd.DataFrame()
+        # Standardize column names
+        retail_df = retail_df.rename(columns={'price': 'Price'})
         return retail_df
     except Exception as e:
         st.error(f"Error reading retail prices file {file_path}: {e}")
@@ -169,7 +170,7 @@ def main():
     st.sidebar.header("Data Sources")
     uploaded_files = {}
     for key, default_path in DEFAULT_FILES.items():
-        uploaded_file = st.sidebar.file_uploader(f"Upload {key.capitalize()} File", type=['tiff', 'geojson', 'xlsx'] if key in ['prices'] else ['tiff'] if key in ['raster', 'friction'] else ['geojson'])
+        uploaded_file = st.sidebar.file_uploader(f"Upload {key.capitalize()} File", type=['tiff', 'geojson', 'xlsx'] if key == 'prices' else ['tiff'] if key in ['raster', 'friction'] else ['geojson'])
         if uploaded_file:
             uploaded_path = os.path.join(BASE_DIR, uploaded_file.name)
             with open(uploaded_path, 'wb') as f:
@@ -210,7 +211,7 @@ def main():
 
     # Validate price data columns
     farmgate_required_columns = ['Régions Name', 'Commodity', 'commodity_english', 'Price', 'Unit2', 'Régions - Latitude', 'Régions - Longitude', 'Year', 'Month']
-    retail_required_columns = ['market', 'commodity', 'price', 'Unit2', 'latitude', 'longitude', 'Year', 'Month']
+    retail_required_columns = ['market', 'commodity', 'Price', 'Unit2', 'latitude', 'longitude', 'Year', 'Month']
     if not prices_df.empty and any(col not in prices_df.columns for col in farmgate_required_columns):
         st.error("Missing required columns in farmgate prices")
         prices_df = pd.DataFrame()
@@ -329,7 +330,7 @@ def main():
                 for _, row in st.session_state.latest_retail_prices.iterrows():
                     if pd.isna(row['latitude']) or pd.isna(row['longitude']):
                         continue
-                    popup_text = f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity']}<br><b>Price:</b> {row['price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
+                    popup_text = f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
                     folium.Marker(
                         location=[row['latitude'], row['longitude']],
                         popup=folium.Popup(popup_text, max_width=250),
@@ -413,15 +414,19 @@ def main():
             st.markdown("#### Statistics")
             stats = st.session_state.latest_farmgate_prices.groupby('commodity_english')['Price'].agg(['mean', 'min', 'max']).reset_index()
             st.dataframe(stats)
+        else:
+            st.warning("No farmgate price data available for the selected filters.")
 
         if not st.session_state.latest_retail_prices.empty:
             st.markdown("### Retail Prices")
-            st.dataframe(st.session_state.latest_retail_prices[['market', 'commodity', 'price', 'Unit2', 'Year', 'Month']])
+            st.dataframe(st.session_state.latest_retail_prices[['market', 'commodity', 'Price', 'Unit2', 'Year', 'Month']])
             csv = st.session_state.latest_retail_prices.to_csv(index=False)
             st.download_button("Download Retail Prices", csv, "retail_prices.csv", "text/csv")
             st.markdown("#### Statistics")
-            stats = st.session_state.latest_retail_prices.groupby('commodity')['price'].agg(['mean', 'min', 'max']).reset_index()
+            stats = st.session_state.latest_retail_prices.groupby('commodity')['Price'].agg(['mean', 'min', 'max']).reset_index()
             st.dataframe(stats)
+        else:
+            st.warning("No retail price data available for the selected filters.")
 
         st.markdown("### Data Overview")
         col1, col2, col3 = st.columns(3)
@@ -433,19 +438,43 @@ def main():
         st.subheader("Price Trends")
         if not prices_df.empty:
             st.markdown("### Farmgate Price Trends")
-            commodity = st.selectbox("Select Commodity for Trend", prices_df['commodity_english'].unique())
-            trend_data = prices_df[prices_df['commodity_english'] == commodity][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
-            trend_data['Date'] = pd.to_datetime(trend_data[['Year', 'Month']].assign(day=1))
-            fig = px.line(trend_data, x='Date', y='Price', title=f"{commodity} Farmgate Price Trend")
-            st.plotly_chart(fig)
+            commodity = st.selectbox("Select Commodity for Farmgate Trend", prices_df['commodity_english'].unique())
+            try:
+                trend_data = prices_df[prices_df['commodity_english'] == commodity][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
+                if trend_data.empty:
+                    st.warning(f"No trend data available for {commodity}.")
+                else:
+                    trend_data['Date'] = pd.to_datetime(trend_data[['Year', 'Month']].assign(day=1), errors='coerce')
+                    if trend_data['Date'].isna().any():
+                        st.warning("Some dates could not be parsed. Skipping invalid entries.")
+                        trend_data = trend_data.dropna(subset=['Date'])
+                    if not trend_data.empty:
+                        fig = px.line(trend_data, x='Date', y='Price', title=f"{commodity} Farmgate Price Trend")
+                        st.plotly_chart(fig)
+                    else:
+                        st.warning("No valid trend data after processing.")
+            except Exception as e:
+                st.error(f"Failed to generate farmgate price trend: {e}")
 
         if not retail_df.empty:
             st.markdown("### Retail Price Trends")
             commodity = st.selectbox("Select Commodity for Retail Trend", retail_df['commodity'].unique())
-            trend_data = retail_df[retail_df['commodity'] == commodity][['Year', 'Month', 'price']].groupby(['Year', 'Month']).mean().reset_index()
-            trend_data['Date'] = pd.to_datetime(trend_data[['Year', 'Month']].assign(day=1))
-            fig = px.line(trend_data, x='Date', y='Price', title=f"{commodity} Retail Price Trend")
-            st.plotly_chart(fig)
+            try:
+                trend_data = retail_df[retail_df['commodity'] == commodity][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
+                if trend_data.empty:
+                    st.warning(f"No trend data available for {commodity}.")
+                else:
+                    trend_data['Date'] = pd.to_datetime(trend_data[['Year', 'Month']].assign(day=1), errors='coerce')
+                    if trend_data['Date'].isna().any():
+                        st.warning("Some dates could not be parsed. Skipping invalid entries.")
+                        trend_data = trend_data.dropna(subset=['Date'])
+                    if not trend_data.empty:
+                        fig = px.line(trend_data, x='Date', y='Price', title=f"{commodity} Retail Price Trend")
+                        st.plotly_chart(fig)
+                    else:
+                        st.warning("No valid trend data after processing.")
+            except Exception as e:
+                st.error(f"Failed to generate retail price trend: {e}")
 
     # Footer
     st.markdown("""
