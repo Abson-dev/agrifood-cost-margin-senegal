@@ -38,23 +38,7 @@ markets_path = os.path.join(BASE_DIR, 'markets_from_excel.geojson')
 roads_filtered_path = os.path.join(BASE_DIR, 'roads_filtered.geojson')
 prices_path = os.path.join(BASE_DIR, 'merged_farmgate_retail_prices_senegal.xlsx')
 
-# Debug: Print file paths and check existence
-st.write(f"Markets GeoJSON path: {markets_path}")
-st.write(f"Roads GeoJSON path: {roads_filtered_path}")
-st.write(f"Markets file exists: {os.path.exists(markets_path)}")
-st.write(f"Roads file exists: {os.path.exists(roads_filtered_path)}")
 
-# Debug: Print first 200 characters of GeoJSON files
-try:
-    with open(markets_path, 'r', encoding='utf-8') as f:
-        st.write("Markets GeoJSON content (first 200 chars):", f.read(200))
-except Exception as e:
-    st.warning(f"Cannot read markets GeoJSON content: {e}")
-try:
-    with open(roads_filtered_path, 'r', encoding='utf-8') as f:
-        st.write("Roads GeoJSON content (first 200 chars):", f.read(200))
-except Exception as e:
-    st.warning(f"Cannot read roads GeoJSON content: {e}")
 
 # -------------------------------
 # Helper Function: RGB Conversion
@@ -94,38 +78,7 @@ except rasterio.errors.RasterioIOError as e:
 # Mask nodata values
 data = np.ma.masked_equal(travel_time, nodata) if nodata is not None else np.ma.masked_invalid(travel_time)
 
-# -------------------------------
-# 2. Summary Statistics
-# -------------------------------
-with st.expander("Travel Time Summary Statistics"):
-    st.write(f"**Min:** {data.min():.2f} min")
-    st.write(f"**Max:** {data.max():.2f} min")
-    st.write(f"**Mean:** {data.mean():.2f} min")
-    st.write(f"**Std Dev:** {data.std():.2f} min")
 
-# -------------------------------
-# 3. Percentiles
-# -------------------------------
-percentiles = np.percentile(data.compressed(), [5, 25, 50, 75, 95])
-with st.expander("Travel Time Percentiles"):
-    st.write(f"**5th:** {percentiles[0]:.2f} min")
-    st.write(f"**25th:** {percentiles[1]:.2f} min")
-    st.write(f"**50th (median):** {percentiles[2]:.2f} min")
-    st.write(f"**75th:** {percentiles[3]:.2f} min")
-    st.write(f"**95th:** {percentiles[4]:.2f} min")
-
-# -------------------------------
-# 4. Histogram
-# -------------------------------
-st.subheader("Histogram of Travel Time to Cities")
-fig, ax = plt.subplots(figsize=(10, 5))
-ax.hist(data.compressed(), bins=50, color='skyblue', edgecolor='black')
-ax.set_title('Histogram of Travel Time to Cities (min)')
-ax.set_xlabel('Travel Time (minutes)')
-ax.set_ylabel('Count')
-ax.grid(True)
-plt.tight_layout()
-st.pyplot(fig)
 
 # -------------------------------
 # 5. Load and Process Friction Raster
