@@ -500,31 +500,37 @@ def main():
                 except Exception as e:
                     st.error(f"Map rendering failed: {str(e)}. Please check data files or coordinates.")
                 finally:
-                    st.spinner(False)  # Ensure spinner is cleared
+                    st.spinner(False)
 
     with tab2:
         st.subheader("Data Summary")
+        # Combine Farmgate and Retail Prices into a single table
+        combined_prices = pd.DataFrame()
         if not st.session_state.latest_farmgate_prices.empty:
-            st.markdown("### Farmgate Prices")
-            st.dataframe(st.session_state.latest_farmgate_prices[['Régions Name', 'commodity_english', 'Price', 'Unit2', 'Year', 'Month']])
-            csv = st.session_state.latest_farmgate_prices.to_csv(index=False)
-            st.download_button("Download Farmgate Prices", csv, "farmgate_prices.csv", "text/csv")
-            st.markdown("#### Statistics")
-            stats = st.session_state.latest_farmgate_prices.groupby('commodity_english')['Price'].agg(['mean', 'min', 'max']).reset_index()
-            st.dataframe(stats)
-        else:
-            st.warning("No farmgate price data available for the selected filters.")
-
+            farmgate_prices = st.session_state.latest_farmgate_prices.copy()
+            farmgate_prices = farmgate_prices.rename(columns={'Régions Name': 'Location', 'commodity_english': 'Commodity'})
+            farmgate_prices['Price Type'] = 'Farmgate'
+            combined_prices = pd.concat([combined_prices, farmgate_prices], ignore_index=True)
         if not st.session_state.latest_retail_prices.empty:
-            st.markdown("### Retail Prices")
-            st.dataframe(st.session_state.latest_retail_prices[['market', 'commodity', 'Price', 'Unit2', 'Year', 'Month']])
-            csv = st.session_state.latest_retail_prices.to_csv(index=False)
-            st.download_button("Download Retail Prices", csv, "retail_prices.csv", "text/csv")
+            retail_prices = st.session_state.latest_retail_prices.copy()
+            retail_prices = retail_prices.rename(columns={'market': 'Location', 'commodity': 'Commodity'})
+            retail_prices['Price Type'] = 'Retail'
+            combined_prices = pd.concat([combined_prices, retail_prices], ignore_index=True)
+
+        if not combined_prices.empty and selected_commodity_ids:
+            combined_prices = combined_prices[combined_prices['commodity_id'].isin(selected_commodity_ids)]
+
+        if not combined_prices.empty:
+            st.markdown("### Combined Price Data")
+            columns_to_display = ['Location', 'Commodity', 'Price', 'Unit2', 'Year', 'Month', 'Price Type']
+            st.dataframe(combined_prices[columns_to_display])
+            csv = combined_prices[columns_to_display].to_csv(index=False)
+            st.download_button("Download Combined Prices", csv, "combined_prices.csv", "text/csv")
             st.markdown("#### Statistics")
-            stats = st.session_state.latest_retail_prices.groupby('commodity')['Price'].agg(['mean', 'min', 'max']).reset_index()
+            stats = combined_prices.groupby(['Commodity', 'Price Type'])['Price'].agg(['mean', 'min', 'max']).reset_index()
             st.dataframe(stats)
         else:
-            st.warning("No retail price data available for the selected filters.")
+            st.warning("No price data available for the selected commodities.")
 
         st.markdown("### Data Overview")
         col1, col2, col3 = st.columns(3)
