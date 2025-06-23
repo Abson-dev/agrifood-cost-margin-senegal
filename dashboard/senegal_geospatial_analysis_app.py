@@ -8,7 +8,6 @@ import folium
 from folium.plugins import MarkerCluster, MiniMap, Fullscreen
 import streamlit as st
 from streamlit_folium import st_folium
-from branca.element import Template, MacroElement
 import plotly.express as px
 import plotly.graph_objects as go
 import uuid
@@ -168,6 +167,10 @@ def main():
     .header { background-color: #1e3a8a; color: white; padding: 20px; border-radius: 8px; }
     .footer { background-color: #1e3a8a; color: white; padding: 10px; text-align: center; margin-top: 20px; }
     .stApp [data-testid="stMapContainer"] { margin-top: 10px; }
+    .legend-container { background-color: white; border: 2px solid grey; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3); margin-top: 10px; }
+    .legend-title { font-weight: bold; font-size: 14px; margin-bottom: 10px; }
+    .legend-item { display: flex; align-items: center; margin-bottom: 5px; font-size: 14px; }
+    .legend-color { width: 20px; height: 20px; margin-right: 8px; display: inline-block; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -429,51 +432,75 @@ def main():
                             cross_origin=False
                         ).add_to(m)
 
-                    # Add Legends with adjusted positioning
-                    if show_travel:
-                        travel_legend_html = """
-                        {% macro html(this, kwargs) %}
-                        <div style="position: fixed; bottom: 2%; left: 2%; width: 180px; height: 230px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
-                        <b>Travel Time (min)</b><br><div style="margin-top:10px;">
-                        <div style="background:#ffffcc;width:20px;height:20px;display:inline-block;"></div> 0–10<br>
-                        <div style="background:#ffeda0;width:20px;height:20px;display:inline;"></div> 10–30<br>
-                        <div style="background:#feb24c;width:20px;height:20px;display:inline;"></div> 30–60<br>
-                        <div style="background:#fd8d3c;width:20px;height:20px;display:inline;"></div> 60–120<br>
-                        <div style="background:#f03b20;width:20px;height:20px;"></div> 120–240<br>
-                        <div style="background:#bd0026;width:20px;"></div> 240–1440<br>
-                        <div style="background:#800026;width:20px;"></div> >1440</div></div>
-                        {% endmacro %}
-                        """
-                        travel_legend = MacroElement()
-                        travel_legend._template = Template(travel_legend_html)
-                        m.get_root().add_child(travel_legend)
-
-                    if show_friction:
-                        friction_legend_html = """
-                        {% macro html(this, kwargs) %}
-                        <div style="position: fixed; bottom: 2%; right: 2%; width: 200px; height: 260px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
-                        <b>Friction (min/m)</b><br><div style="margin-top:10px;">
-                        <div style="background:#006837;width:20px;height:20px;display:inline-block;"></div> ≤ 0.001<br>
-                        <div style="background:#31a354;width:20px;height:20px;display:inline-block;"></div>
-                        <div style="background:#78c679;width:20px;height:20px;display:inline-block;"></div> ≤ 0.1<br>
-                        <div style="background:#c2e699;width:20px;height:20px;display:inline-block;"></div> ≤ 0.5<br>
-                        <div style="background:#fdae61;width:20px;height:20px;display:inline-block;"></div> ≤ 1.0<br>
-                        <div style="background:#f46d43;width:20px;height:20px;display:inline-block;"></div> ≤ 2.0<br>
-                        <div style="background:#a50026;width:20px;height:20px;display:inline-block;"></div> ≤ 5.0<br>
-                        <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> > 5.0</div></div>
-                        </div>
-                        {% endmacro %}
-                        """
-                        friction_legend = MacroElement()
-                        friction_legend._template = Template(friction_legend_html)
-                        m.get_root().add_child(friction_legend)
-
                     # Add MiniMap and Fullscreen
                     MiniMap(tiles='OpenStreetMap', position='bottomleft', width=150, height=150).add_to(m)
                     Fullscreen(position='topright', title='Expand', title_cancel='Exit').add_to(m)
 
                     folium.LayerControl(collapsed=False).add_to(m)
                     st_folium(m, width=1400, height=800, key=f"folium_map_{st.session_state.map_render_key}")
+
+                    # Add Legends Below Map
+                    if show_travel or show_friction:
+                        col1, col2 = st.columns(2)
+                        if show_travel:
+                            with col1:
+                                st.markdown("""
+                                <div class="legend-container">
+                                    <div class="legend-title">Travel Time (min)</div>
+                                    <div class="legend-item">
+                                        <span class="legend-color" style="background:#ffffcc;"></span> 0–10
+                                    </div>
+                                    <div class="legend-item">
+                                        <span class="legend-color" style="background:#ffeda0;"></span> 10–30
+                                    </div>
+                                    <div class="legend-item">
+                                        <span class="legend-color" style="background:#feb24c;"></span> 30–60
+                                    </div>
+                                    <div class="legend-item">
+                                        <span class="legend-color" style="background:#fd8d3c;"></span> 60–120
+                                    </div>
+                                    <div class="legend-item">
+                                        <span class="legend-color" style="background:#f03b20;"></span> 120–240
+                                    </div>
+                                    <div class="legend-item">
+                                        <span class="legend-color" style="background:#bd0026;"></span> 240–1440
+                                    </div>
+                                    <div class="legend-item">
+                                        <span class="legend-color" style="background:#800026;"></span> >1440
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                        if show_friction:
+                            with col2:
+                                st.markdown("""
+                                <div class="legend-container">
+                                    <div class="legend-title">Friction (min/m)</div>
+                                    <div class="legend-item">
+                                        <span class="legend-color" style="background:#006837;"></span> ≤ 0.001
+                                    </div>
+                                    <div class="legend-item">
+                                        <span class="legend-color" style="background:#31a354;"></span> ≤ 0.01
+                                    </div>
+                                    <div class="legend-item">
+                                        <span class="legend-color" style="background:#78c679;"></span> ≤ 0.1
+                                    </div>
+                                    <div class="legend-item">
+                                        <span class="legend-color" style="background:#c2e699;"></span> ≤ 0.5
+                                    </div>
+                                    <div class="legend-item">
+                                        <span class="legend-color" style="background:#fdae61;"></span> ≤ 1.0
+                                    </div>
+                                    <div class="legend-item">
+                                        <span class="legend-color" style="background:#f46d43;"></span> ≤ 2.0
+                                    </div>
+                                    <div class="legend-item">
+                                        <span class="legend-color" style="background:#a50026;"></span> ≤ 5.0
+                                    </div>
+                                    <div class="legend-item">
+                                        <span class="legend-color" style="background:#800026;"></span> > 5.0
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
                 except Exception as e:
                     st.error(f"Map rendering failed: {str(e)}. Please check data files or coordinates.")
                 finally:
