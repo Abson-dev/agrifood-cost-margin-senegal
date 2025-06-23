@@ -22,6 +22,14 @@ markets_path = os.path.join(BASE_DIR, 'markets_from_excel.geojson')
 roads_filtered_path = os.path.join(BASE_DIR, 'roads_filtered.geojson')
 prices_path = os.path.join(BASE_DIR, 'merged_farmgate_retail_prices_senegal.xlsx')
 
+# Initialize session state
+if 'map_rendered' not in st.session_state:
+    st.session_state.map_rendered = False
+if 'latest_farmgate_prices' not in st.session_state:
+    st.session_state.latest_farmgate_prices = pd.DataFrame()
+if 'latest_retail_prices' not in st.session_state:
+    st.session_state.latest_retail_prices = pd.DataFrame()
+
 # -------------------------------
 # Helper Function: RGB Conversion
 # -------------------------------
@@ -162,7 +170,8 @@ if not available_months:
 commodities = sorted(list(set(prices_df['commodity_english'].unique()) | set(retail_df['commodity'].unique()))) if not prices_df.empty or not retail_df.empty else []
 selected_commodities = st.sidebar.multiselect("Select Commodities", commodities, default=commodities) if commodities else []
 
-if st.sidebar.button("Apply Filters and Render Map"):
+# Initial render or reapply filters
+if st.sidebar.button("Apply Filters and Render Map") or not st.session_state.map_rendered:
     # Filter datasets
     latest_farmgate_prices = pd.DataFrame()
     latest_retail_prices = pd.DataFrame()
@@ -187,6 +196,11 @@ if st.sidebar.button("Apply Filters and Render Map"):
             latest_retail_prices = latest_retail_prices[latest_retail_prices['commodity'].isin(selected_commodities)]
         if latest_retail_prices.empty:
             st.warning("No retail price data available for the selected period")
+
+    # Update session state
+    st.session_state.latest_farmgate_prices = latest_farmgate_prices
+    st.session_state.latest_retail_prices = latest_retail_prices
+    st.session_state.map_rendered = True
 
     # Render Map
     st.subheader("Interactive Map")
@@ -220,7 +234,7 @@ if st.sidebar.button("Apply Filters and Render Map"):
 
     # Add Farmgate Prices Layer with Clustering
     farmgate_cluster = MarkerCluster(name="Farmgate Prices", show=True).add_to(m)
-    for _, row in latest_farmgate_prices.iterrows():
+    for _, row in st.session_state.latest_farmgate_prices.iterrows():
         if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
             st.warning(f"Skipping farmgate row with invalid coordinates: {row['Régions Name']}, {row['Commodity']}")
             continue
@@ -229,7 +243,7 @@ if st.sidebar.button("Apply Filters and Render Map"):
 
     # Add Retail Prices Layer with Clustering
     retail_cluster = MarkerCluster(name="Retail Prices", show=True).add_to(m)
-    for _, row in latest_retail_prices.iterrows():
+    for _, row in st.session_state.latest_retail_prices.iterrows():
         if pd.isna(row['latitude']) or pd.isna(row['longitude']):
             st.warning(f"Skipping retail row with invalid coordinates: {row['market'], row['commodity']}")
             continue
@@ -264,3 +278,9 @@ if st.sidebar.button("Apply Filters and Render Map"):
     folium.LayerControl().add_to(m)
     with st.spinner("Rendering map..."):
         st_folium(m, width=1200, height=600)
+else:
+    # Display the last rendered map if available
+    if st.session_state.map_rendered:
+        st.subheader("Interactive Map")
+        st_folium(folium.Map(), width=1200, height=600)  # Placeholder to retain space; actual map data is lost on rerun
+        st.warning("Map persists from last render. Click 'Apply Filters and Render Map' to update.")
