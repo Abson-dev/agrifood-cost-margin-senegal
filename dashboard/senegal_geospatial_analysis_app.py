@@ -510,11 +510,15 @@ def main():
             farmgate_prices = st.session_state.latest_farmgate_prices.copy()
             farmgate_prices = farmgate_prices.rename(columns={'Régions Name': 'Location', 'commodity_english': 'Commodity'})
             farmgate_prices['Price Type'] = 'Farmgate'
+            # Reset index to ensure uniqueness
+            farmgate_prices = farmgate_prices.reset_index(drop=True)
             combined_prices = pd.concat([combined_prices, farmgate_prices], ignore_index=True)
         if not st.session_state.latest_retail_prices.empty:
             retail_prices = st.session_state.latest_retail_prices.copy()
             retail_prices = retail_prices.rename(columns={'market': 'Location', 'commodity': 'Commodity'})
             retail_prices['Price Type'] = 'Retail'
+            # Reset index to ensure uniqueness
+            retail_prices = retail_prices.reset_index(drop=True)
             combined_prices = pd.concat([combined_prices, retail_prices], ignore_index=True)
 
         if not combined_prices.empty and selected_commodity_ids:
