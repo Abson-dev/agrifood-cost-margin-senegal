@@ -458,7 +458,7 @@ def main():
 
             folium.LayerControl(collapsed=False).add_to(m)
             with st.spinner("Rendering map..."):
-                st_folium(m, width=1400, height=800, key="folium_map")
+                st_folium(m, width=1400, height=1000, key="folium_map")
         except Exception as e:
             st.error(f"Failed to render map: {e}. Please check data or coordinates.")
 
