@@ -1,8 +1,9 @@
-streamlit
-folium
-streamlit-folium
 rasterio
 numpy
 pandas
 Pillow
+folium
+streamlit
+streamlit-folium
+branca
 plotly
