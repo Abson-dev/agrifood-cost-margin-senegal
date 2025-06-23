@@ -238,6 +238,9 @@ def main():
         # Filter controls
         st.sidebar.header("Map Filters")
         common_years = sorted(list(set(prices_df['Year']).intersection(set(retail_df['Year'])))) if not prices_df.empty and not retail_df.empty else []
+        if not common_years:
+            st.error("No common years found between farmgate and retail data. Please upload a valid Excel file.")
+            st.stop()
         latest_year = max(common_years) if common_years else None
         selected_year = st.sidebar.selectbox("Select Year", common_years, index=common_years.index(latest_year) if latest_year else 0, key="year_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
 
@@ -248,7 +251,14 @@ def main():
         selected_month_name = st.sidebar.selectbox("Select Month", [month_names.get(m, str(m)) for m in available_months], index=available_months.index(latest_month) if latest_month else 0, key="month_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
         selected_month = next((k for k, v in month_names.items() if v == selected_month_name), selected_month_name) if selected_month_name else None
 
-        commodities = sorted(list(set(prices_df['commodity_english'].unique()) | set(retail_df['commodity'].unique()))) if not prices_df.empty or not retail_df.empty else []
+        # Filter commodities to those present in both farmgate and retail
+        commodities = []
+        if not prices_df.empty and not retail_df.empty:
+            farmgate_commodities = set(prices_df['commodity_english'].unique())
+            retail_commodities = set(retail_df['commodity'].unique())
+            commodities = sorted(list(farmgate_commodities.intersection(retail_commodities)))
+        if not commodities:
+            st.warning("No commodities found in both farmgate and retail datasets. Please check your data.")
         selected_commodities = st.sidebar.multiselect("Select Commodities", commodities, default=commodities, key="commodity_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
 
         # Layer toggles
@@ -460,9 +470,9 @@ def main():
 
     with tab3:
         st.subheader("Price Trends")
-        if not prices_df.empty:
+        if not prices_df.empty and commodities:
             st.markdown("### Farmgate Price Trends")
-            commodity = st.selectbox("Select Commodity for Farmgate Trend", prices_df['commodity_english'].unique())
+            commodity = st.selectbox("Select Commodity for Farmgate Trend", commodities)
             try:
                 trend_data = prices_df[prices_df['commodity_english'] == commodity][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if trend_data.empty:
@@ -480,9 +490,9 @@ def main():
             except Exception as e:
                 st.error(f"Failed to generate farmgate price trend: {e}")
 
-        if not retail_df.empty:
+        if not retail_df.empty and commodities:
             st.markdown("### Retail Price Trends")
-            commodity = st.selectbox("Select Commodity for Retail Trend", retail_df['commodity'].unique())
+            commodity = st.selectbox("Select Commodity for Retail Trend", commodities)
             try:
                 trend_data = retail_df[retail_df['commodity'] == commodity][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if trend_data.empty:
