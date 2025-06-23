@@ -10,6 +10,7 @@ from PIL import Image
 from branca.element import Template, MacroElement
 import streamlit as st
 from streamlit_folium import st_folium
+from folium.plugins import MarkerCluster
 
 # -------------------------------
 # Configuration: File Paths
@@ -38,8 +39,8 @@ def generate_colors(data, breaks, colors):
 @st.cache_data
 def load_and_process_raster(file_path):
     with rasterio.open(file_path) as src:
-        # Downsample to reduce computation time
-        data = src.read(1, out_shape=(1, src.height // 2, src.width // 2), resampling=rasterio.enums.Resampling.bilinear)
+        # Increase downsampling to reduce computation time
+        data = src.read(1, out_shape=(1, src.height // 4, src.width // 4), resampling=rasterio.enums.Resampling.bilinear)
         nodata = src.nodata
         bounds = (src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top)  # Convert to hashable tuple
     return np.ma.masked_equal(data, nodata) if nodata else np.ma.masked_invalid(data), bounds
@@ -50,6 +51,7 @@ friction_data, friction_bounds = load_and_process_raster(friction_path)
 # -------------------------------
 # Generate Raster Images
 # -------------------------------
+@st.cache_data(hash_funcs={np.ma.MaskedArray: lambda x: hash(x.data.tobytes())})
 def generate_travel_image(data, bounds):
     breaks = [0, 10, 30, 60, 120, 240, 1440, np.inf]
     colors = [(255, 255, 204), (255, 237, 160), (254, 178, 76), (253, 141, 60), (240, 59, 32), (189, 0, 38), (128, 0, 38)]
@@ -58,6 +60,7 @@ def generate_travel_image(data, bounds):
     Image.fromarray(rgb).save(travel_png_path)
     return travel_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
 
+@st.cache_data(hash_funcs={np.ma.MaskedArray: lambda x: hash(x.data.tobytes())})
 def generate_friction_image(data, bounds):
     friction_breaks = [0, 0.001, 0.01, 0.1, 0.5, 1.0, 2.0, 5.0, np.inf]
     friction_colors = [(0, 104, 55), (49, 163, 84), (120, 198, 121), (194, 230, 153), (253, 174, 97), (244, 109, 67), (165, 0, 38), (128, 0, 38)]
@@ -215,25 +218,23 @@ if st.sidebar.button("Apply Filters and Render Map"):
         except Exception as e:
             st.warning(f"Failed to add markets layer to map: {e}")
 
-    # Add Farmgate Prices Layer
-    farmgate_group = folium.FeatureGroup(name="Farmgate Prices", show=True)
+    # Add Farmgate Prices Layer with Clustering
+    farmgate_cluster = MarkerCluster(name="Farmgate Prices", show=True).add_to(m)
     for _, row in latest_farmgate_prices.iterrows():
         if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
             st.warning(f"Skipping farmgate row with invalid coordinates: {row['Régions Name']}, {row['Commodity']}")
             continue
         popup_text = f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
-        folium.Marker(location=[row['Régions - Latitude'], row['Régions - Longitude']], popup=folium.Popup(popup_text, max_width=250), icon=folium.Icon(color='green', icon='tractor', prefix='fa')).add_to(farmgate_group)
-    farmgate_group.add_to(m)
+        folium.Marker(location=[row['Régions - Latitude'], row['Régions - Longitude']], popup=folium.Popup(popup_text, max_width=250), icon=folium.Icon(color='green', icon='tractor', prefix='fa')).add_to(farmgate_cluster)
 
-    # Add Retail Prices Layer
-    retail_group = folium.FeatureGroup(name="Retail Prices", show=True)
+    # Add Retail Prices Layer with Clustering
+    retail_cluster = MarkerCluster(name="Retail Prices", show=True).add_to(m)
     for _, row in latest_retail_prices.iterrows():
         if pd.isna(row['latitude']) or pd.isna(row['longitude']):
             st.warning(f"Skipping retail row with invalid coordinates: {row['market'], row['commodity']}")
             continue
         popup_text = f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity']}<br><b>Price:</b> {row['price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
-        folium.Marker(location=[row['latitude'], row['longitude']], popup=folium.Popup(popup_text, max_width=250), icon=folium.Icon(color='purple', icon='shopping-basket', prefix='fa')).add_to(retail_group)
-    retail_group.add_to(m)
+        folium.Marker(location=[row['latitude'], row['longitude']], popup=folium.Popup(popup_text, max_width=250), icon=folium.Icon(color='purple', icon='shopping-basket', prefix='fa')).add_to(retail_cluster)
 
     # Add Raster Overlays
     folium.raster_layers.ImageOverlay(name="Travel Time", image=travel_png_path, bounds=travel_image_bounds, opacity=0.6, interactive=True, cross_origin=False).add_to(m)
@@ -261,4 +262,5 @@ if st.sidebar.button("Apply Filters and Render Map"):
     m.get_root().add_child(friction_legend)
 
     folium.LayerControl().add_to(m)
-    st_folium(m, width=1200, height=600)
+    with st.spinner("Rendering map..."):
+        st_folium(m, width=1200, height=600)
