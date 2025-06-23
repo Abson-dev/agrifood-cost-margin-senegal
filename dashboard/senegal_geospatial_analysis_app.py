@@ -294,7 +294,7 @@ def main():
         show_travel = st.sidebar.checkbox("Travel Time", value=False)
         show_friction = st.sidebar.checkbox("Friction Surface", value=False)
         show_roads = st.sidebar.checkbox("Roads", value=False)
-        show_markets = st.sidebar.checkbox("Markets", value=False)
+        show_markets = st.sidebar.checkbox("Markets", value=True)
         show_farmgate = st.sidebar.checkbox("Farmgate Prices", value=False)
         show_retail = st.sidebar.checkbox("Retail Prices", value=False)
 
@@ -439,7 +439,7 @@ def main():
                     folium.LayerControl(collapsed=False).add_to(m)
                     st_folium(m, width=1400, height=800, key=f"folium_map_{st.session_state.map_render_key}")
 
-                    # Add Legends Below Map
+                    # Add Legends Below Map (Travel on Left, Friction on Right)
                     if show_travel or show_friction:
                         col1, col2 = st.columns(2)
                         if show_travel:
