@@ -16,6 +16,7 @@ Outputs:
 
 import os
 import sys
+import json
 import rasterio
 import numpy as np
 import matplotlib.pyplot as plt
@@ -37,9 +38,23 @@ markets_path = os.path.join(BASE_DIR, 'markets_from_excel.geojson')
 roads_filtered_path = os.path.join(BASE_DIR, 'roads_filtered.geojson')
 prices_path = os.path.join(BASE_DIR, 'merged_farmgate_retail_prices_senegal.xlsx')
 
-# Debug: Print file paths
+# Debug: Print file paths and check existence
 st.write(f"Markets GeoJSON path: {markets_path}")
 st.write(f"Roads GeoJSON path: {roads_filtered_path}")
+st.write(f"Markets file exists: {os.path.exists(markets_path)}")
+st.write(f"Roads file exists: {os.path.exists(roads_filtered_path)}")
+
+# Debug: Print first 200 characters of GeoJSON files
+try:
+    with open(markets_path, 'r', encoding='utf-8') as f:
+        st.write("Markets GeoJSON content (first 200 chars):", f.read(200))
+except Exception as e:
+    st.warning(f"Cannot read markets GeoJSON content: {e}")
+try:
+    with open(roads_filtered_path, 'r', encoding='utf-8') as f:
+        st.write("Roads GeoJSON content (first 200 chars):", f.read(200))
+except Exception as e:
+    st.warning(f"Cannot read roads GeoJSON content: {e}")
 
 # -------------------------------
 # Helper Function: RGB Conversion
@@ -79,7 +94,38 @@ except rasterio.errors.RasterioIOError as e:
 # Mask nodata values
 data = np.ma.masked_equal(travel_time, nodata) if nodata is not None else np.ma.masked_invalid(travel_time)
 
+# -------------------------------
+# 2. Summary Statistics
+# -------------------------------
+with st.expander("Travel Time Summary Statistics"):
+    st.write(f"**Min:** {data.min():.2f} min")
+    st.write(f"**Max:** {data.max():.2f} min")
+    st.write(f"**Mean:** {data.mean():.2f} min")
+    st.write(f"**Std Dev:** {data.std():.2f} min")
 
+# -------------------------------
+# 3. Percentiles
+# -------------------------------
+percentiles = np.percentile(data.compressed(), [5, 25, 50, 75, 95])
+with st.expander("Travel Time Percentiles"):
+    st.write(f"**5th:** {percentiles[0]:.2f} min")
+    st.write(f"**25th:** {percentiles[1]:.2f} min")
+    st.write(f"**50th (median):** {percentiles[2]:.2f} min")
+    st.write(f"**75th:** {percentiles[3]:.2f} min")
+    st.write(f"**95th:** {percentiles[4]:.2f} min")
+
+# -------------------------------
+# 4. Histogram
+# -------------------------------
+st.subheader("Histogram of Travel Time to Cities")
+fig, ax = plt.subplots(figsize=(10, 5))
+ax.hist(data.compressed(), bins=50, color='skyblue', edgecolor='black')
+ax.set_title('Histogram of Travel Time to Cities (min)')
+ax.set_xlabel('Travel Time (minutes)')
+ax.set_ylabel('Count')
+ax.grid(True)
+plt.tight_layout()
+st.pyplot(fig)
 
 # -------------------------------
 # 5. Load and Process Friction Raster
@@ -100,29 +146,53 @@ friction_data = np.ma.masked_equal(friction_data, nodata) if nodata else np.ma.m
 # -------------------------------
 markets = None
 roads_filtered = None
+
+# Try loading with geopandas
 try:
-    # Check if markets GeoJSON exists
     if not os.path.exists(markets_path):
         st.error(f"Markets GeoJSON file not found: {markets_path}")
-        sys.exit(1)
-    markets = gpd.read_file(markets_path)
-    if markets.empty:
-        st.warning("Markets GeoJSON is empty")
+    else:
+        markets = gpd.read_file(markets_path)
+        if markets.empty:
+            st.warning("Markets GeoJSON is empty")
 except Exception as e:
-    st.error(f"Error reading markets GeoJSON file {markets_path}: {e}")
-    sys.exit(1)
+    st.warning(f"Geopandas failed to read markets GeoJSON: {e}")
+    # Fallback to json loading
+    try:
+        with open(markets_path, 'r', encoding='utf-8') as f:
+            markets_json = json.load(f)
+        if markets_json.get('type') != 'FeatureCollection':
+            st.error(f"Markets GeoJSON is not a valid FeatureCollection")
+            markets = None
+        else:
+            markets = markets_json  # Use as raw JSON for folium
+            st.info("Loaded markets GeoJSON using json fallback")
+    except Exception as e2:
+        st.error(f"Failed to load markets GeoJSON with json: {e2}")
+        markets = None
 
 try:
-    # Check if roads GeoJSON exists
     if not os.path.exists(roads_filtered_path):
         st.error(f"Roads GeoJSON file not found: {roads_filtered_path}")
-        sys.exit(1)
-    roads_filtered = gpd.read_file(roads_filtered_path)
-    if roads_filtered.empty:
-        st.warning("Roads GeoJSON is empty")
+    else:
+        roads_filtered = gpd.read_file(roads_filtered_path)
+        if roads_filtered.empty:
+            st.warning("Roads GeoJSON is empty")
 except Exception as e:
-    st.error(f"Error reading roads GeoJSON file {roads_filtered_path}: {e}")
-    sys.exit(1)
+    st.warning(f"Geopandas failed to read roads GeoJSON: {e}")
+    # Fallback to json loading
+    try:
+        with open(roads_filtered_path, 'r', encoding='utf-8') as f:
+            roads_json = json.load(f)
+        if roads_json.get('type') != 'FeatureCollection':
+            st.error(f"Roads GeoJSON is not a valid FeatureCollection")
+            roads_filtered = None
+        else:
+            roads_filtered = roads_json  # Use as raw JSON for folium
+            st.info("Loaded roads GeoJSON using json fallback")
+    except Exception as e2:
+        st.error(f"Failed to load roads GeoJSON with json: {e2}")
+        roads_filtered = None
 
 # -------------------------------
 # 7. Load and Process Farmgate Prices
@@ -274,7 +344,7 @@ center_lon = (travel_bounds.left + travel_bounds.right) / 2
 m = folium.Map(location=[center_lat, center_lon], zoom_start=7, tiles="CartoDB Positron")
 
 # Add Roads Layer
-if roads_filtered is not None:
+if isinstance(roads_filtered, dict):  # JSON fallback
     folium.GeoJson(
         roads_filtered,
         name="Roads",
@@ -284,9 +354,33 @@ if roads_filtered is not None:
             'opacity': 0.7
         }
     ).add_to(m)
+elif isinstance(roads_filtered, gpd.GeoDataFrame):
+    folium.GeoJson(
+        roads_filtered,
+        name="Roads",
+        style_function=lambda x: {
+            'color': 'blue',
+            'weight': 1,
+            'opacity': 0.7
+        }
+    ).add_to(m)
+else:
+    st.warning("No roads data loaded; skipping roads layer")
 
 # Add Markets Layer
-if markets is not None:
+if isinstance(markets, dict):  # JSON fallback
+    market_group = folium.FeatureGroup(name="Markets", show=True)
+    for feature in markets.get('features', []):
+        if feature['geometry']['type'] == 'Point':
+            coords = feature['geometry']['coordinates'][::-1]  # [lon, lat] to [lat, lon]
+            popup = feature['properties'].get('market', 'Unknown Market')
+            folium.Marker(
+                location=coords,
+                popup=popup,
+                icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
+            ).add_to(market_group)
+    market_group.add_to(m)
+elif isinstance(markets, gpd.GeoDataFrame):
     market_group = folium.FeatureGroup(name="Markets", show=True)
     for _, row in markets.iterrows():
         folium.Marker(
@@ -295,6 +389,8 @@ if markets is not None:
             icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
         ).add_to(market_group)
     market_group.add_to(m)
+else:
+    st.warning("No markets data loaded; skipping markets layer")
 
 # Add Farmgate Prices Layer
 farmgate_group = folium.FeatureGroup(name="Farmgate Prices", show=True)
