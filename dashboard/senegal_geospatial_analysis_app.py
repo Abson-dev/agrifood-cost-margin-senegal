@@ -56,7 +56,6 @@ def generate_colors(data, breaks, colors):
 
 # -------------------------------
 # Load and Process Rasters
-# Rikers
 # -------------------------------
 @st.cache_data(hash_funcs={np.ma.MaskedArray: lambda x: hash((x.data.tobytes(), x.mask.tobytes()))})
 def load_and_process_raster(file_path, downsample_factor=2):
@@ -483,13 +482,14 @@ def main():
                         <div style="position: fixed; bottom: 2%; right: 2%; width: 200px; height: 260px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3);">
                         <b>Friction (min/m)</b><br><div style="margin-top:10px;">
                         <div style="background:#006837;width:20px;height:20px;display:inline-block;"></div> ≤ 0.001<br>
-                        <div style="background:#31a354;width:20px;height:20px;display:inline-block;"></div> ≤ 0.01<br>
+                        <div style="background:#31a354;width:20px;height:20px;display:inline-block;"></div>
                         <div style="background:#78c679;width:20px;height:20px;display:inline-block;"></div> ≤ 0.1<br>
                         <div style="background:#c2e699;width:20px;height:20px;display:inline-block;"></div> ≤ 0.5<br>
                         <div style="background:#fdae61;width:20px;height:20px;display:inline-block;"></div> ≤ 1.0<br>
                         <div style="background:#f46d43;width:20px;height:20px;display:inline-block;"></div> ≤ 2.0<br>
                         <div style="background:#a50026;width:20px;height:20px;display:inline-block;"></div> ≤ 5.0<br>
                         <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> > 5.0</div></div>
+                        </div>
                         {% endmacro %}
                         """
                         friction_legend = MacroElement()
@@ -530,18 +530,25 @@ def main():
                 farmgate_trend = prices_df[prices_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if not farmgate_trend.empty:
                     farmgate_trend['Date'] = pd.to_datetime(farmgate_trend[['Year', 'Month']].assign(day=1), errors='coerce')
-                    farmgate_trend = farmgate_trend.dropna(subset=['Date'])
+                    farmgate_trend = farmgate_trend.dropna(subset=['Date']).reset_index(drop=True)  # Ensure clean index
                     farmgate_trend['Price Type'] = 'Farmgate'
+                else:
+                    farmgate_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])  # Empty DataFrame with correct columns
 
                 # Process retail trends
                 retail_trend = retail_df[retail_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if not retail_trend.empty:
                     retail_trend['Date'] = pd.to_datetime(retail_trend[['Year', 'Month']].assign(day=1), errors='coerce')
-                    retail_trend = retail_trend.dropna(subset=['Date'])
+                    retail_trend = retail_trend.dropna(subset=['Date']).reset_index(drop=True)  # Ensure clean index
                     retail_trend['Price Type'] = 'Retail'
+                else:
+                    retail_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])  # Empty DataFrame with correct columns
 
                 # Combine trends
-                combined_trend = pd.concat([farmgate_trend, retail_trend], ignore_index=True) if not farmgate_trend.empty or not retail_trend.empty else pd.DataFrame()
+                if not farmgate_trend.empty or not retail_trend.empty:
+                    combined_trend = pd.concat([farmgate_trend, retail_trend], ignore_index=True)
+                else:
+                    combined_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
 
                 if combined_trend.empty:
                     st.warning(f"No trend data available for {commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)}.")
