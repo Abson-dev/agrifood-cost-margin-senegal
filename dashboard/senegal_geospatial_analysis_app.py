@@ -20,7 +20,6 @@ import json
 import rasterio
 import numpy as np
 import matplotlib.pyplot as plt
-import geopandas as gpd
 import folium
 import pandas as pd
 from PIL import Image
@@ -37,8 +36,6 @@ friction_path = os.path.join(BASE_DIR, '201501_Global_Travel_Speed_Friction_Surf
 markets_path = os.path.join(BASE_DIR, 'markets_from_excel.geojson')
 roads_filtered_path = os.path.join(BASE_DIR, 'roads_filtered.geojson')
 prices_path = os.path.join(BASE_DIR, 'merged_farmgate_retail_prices_senegal.xlsx')
-
-
 
 # -------------------------------
 # Helper Function: RGB Conversion
@@ -79,7 +76,6 @@ except rasterio.errors.RasterioIOError as e:
 data = np.ma.masked_equal(travel_time, nodata) if nodata is not None else np.ma.masked_invalid(travel_time)
 
 
-
 # -------------------------------
 # 5. Load and Process Friction Raster
 # -------------------------------
@@ -100,52 +96,27 @@ friction_data = np.ma.masked_equal(friction_data, nodata) if nodata else np.ma.m
 markets = None
 roads_filtered = None
 
-# Try loading with geopandas
+# Load markets GeoJSON with json
 try:
-    if not os.path.exists(markets_path):
-        st.error(f"Markets GeoJSON file not found: {markets_path}")
-    else:
-        markets = gpd.read_file(markets_path)
-        if markets.empty:
-            st.warning("Markets GeoJSON is empty")
-except Exception as e:
-    st.warning(f"Geopandas failed to read markets GeoJSON: {e}")
-    # Fallback to json loading
-    try:
-        with open(markets_path, 'r', encoding='utf-8') as f:
-            markets_json = json.load(f)
-        if markets_json.get('type') != 'FeatureCollection':
-            st.error(f"Markets GeoJSON is not a valid FeatureCollection")
-            markets = None
-        else:
-            markets = markets_json  # Use as raw JSON for folium
-            st.info("Loaded markets GeoJSON using json fallback")
-    except Exception as e2:
-        st.error(f"Failed to load markets GeoJSON with json: {e2}")
+    with open(markets_path, 'r', encoding='utf-8') as f:
+        markets = json.load(f)
+    if markets.get('type') != 'FeatureCollection':
+        st.warning("Markets GeoJSON is not a valid FeatureCollection; skipping markets layer")
         markets = None
-
-try:
-    if not os.path.exists(roads_filtered_path):
-        st.error(f"Roads GeoJSON file not found: {roads_filtered_path}")
-    else:
-        roads_filtered = gpd.read_file(roads_filtered_path)
-        if roads_filtered.empty:
-            st.warning("Roads GeoJSON is empty")
 except Exception as e:
-    st.warning(f"Geopandas failed to read roads GeoJSON: {e}")
-    # Fallback to json loading
-    try:
-        with open(roads_filtered_path, 'r', encoding='utf-8') as f:
-            roads_json = json.load(f)
-        if roads_json.get('type') != 'FeatureCollection':
-            st.error(f"Roads GeoJSON is not a valid FeatureCollection")
-            roads_filtered = None
-        else:
-            roads_filtered = roads_json  # Use as raw JSON for folium
-            st.info("Loaded roads GeoJSON using json fallback")
-    except Exception as e2:
-        st.error(f"Failed to load roads GeoJSON with json: {e2}")
+    st.warning(f"Failed to load markets GeoJSON: {e}; skipping markets layer")
+    markets = None
+
+# Load roads GeoJSON with json
+try:
+    with open(roads_filtered_path, 'r', encoding='utf-8') as f:
+        roads_filtered = json.load(f)
+    if roads_filtered.get('type') != 'FeatureCollection':
+        st.warning("Roads GeoJSON is not a valid FeatureCollection; skipping roads layer")
         roads_filtered = None
+except Exception as e:
+    st.warning(f"Failed to load roads GeoJSON: {e}; skipping roads layer")
+    roads_filtered = None
 
 # -------------------------------
 # 7. Load and Process Farmgate Prices
@@ -297,53 +268,36 @@ center_lon = (travel_bounds.left + travel_bounds.right) / 2
 m = folium.Map(location=[center_lat, center_lon], zoom_start=7, tiles="CartoDB Positron")
 
 # Add Roads Layer
-if isinstance(roads_filtered, dict):  # JSON fallback
-    folium.GeoJson(
-        roads_filtered,
-        name="Roads",
-        style_function=lambda x: {
-            'color': 'blue',
-            'weight': 1,
-            'opacity': 0.7
-        }
-    ).add_to(m)
-elif isinstance(roads_filtered, gpd.GeoDataFrame):
-    folium.GeoJson(
-        roads_filtered,
-        name="Roads",
-        style_function=lambda x: {
-            'color': 'blue',
-            'weight': 1,
-            'opacity': 0.7
-        }
-    ).add_to(m)
-else:
-    st.warning("No roads data loaded; skipping roads layer")
+if roads_filtered:
+    try:
+        folium.GeoJson(
+            roads_filtered,
+            name="Roads",
+            style_function=lambda x: {
+                'color': 'blue',
+                'weight': 1,
+                'opacity': 0.7
+            }
+        ).add_to(m)
+    except Exception as e:
+        st.warning(f"Failed to add roads layer to map: {e}")
 
 # Add Markets Layer
-if isinstance(markets, dict):  # JSON fallback
-    market_group = folium.FeatureGroup(name="Markets", show=True)
-    for feature in markets.get('features', []):
-        if feature['geometry']['type'] == 'Point':
-            coords = feature['geometry']['coordinates'][::-1]  # [lon, lat] to [lat, lon]
-            popup = feature['properties'].get('market', 'Unknown Market')
-            folium.Marker(
-                location=coords,
-                popup=popup,
-                icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
-            ).add_to(market_group)
-    market_group.add_to(m)
-elif isinstance(markets, gpd.GeoDataFrame):
-    market_group = folium.FeatureGroup(name="Markets", show=True)
-    for _, row in markets.iterrows():
-        folium.Marker(
-            location=[row.geometry.y, row.geometry.x],
-            popup=row['market'],
-            icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
-        ).add_to(market_group)
-    market_group.add_to(m)
-else:
-    st.warning("No markets data loaded; skipping markets layer")
+if markets:
+    try:
+        market_group = folium.FeatureGroup(name="Markets", show=True)
+        for feature in markets.get('features', []):
+            if feature['geometry']['type'] == 'Point':
+                coords = feature['geometry']['coordinates'][::-1]  # [lon, lat] to [lat, lon]
+                popup = feature['properties'].get('market', 'Unknown Market')
+                folium.Marker(
+                    location=coords,
+                    popup=popup,
+                    icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
+                ).add_to(market_group)
+        market_group.add_to(m)
+    except Exception as e:
+        st.warning(f"Failed to add markets layer to map: {e}")
 
 # Add Farmgate Prices Layer
 farmgate_group = folium.FeatureGroup(name="Farmgate Prices", show=True)
