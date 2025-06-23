@@ -273,7 +273,6 @@ def main():
         if not commodity_options:
             st.error("No commodities found in both farmgate and retail datasets with common commodity IDs. Please check your data.")
             st.stop()
-
         # Display commodity names but store IDs
         selected_commodity_ids = st.sidebar.multiselect(
             "Select Commodities",
@@ -329,9 +328,42 @@ def main():
 
         # Render Map
         try:
-            center_lat = (travel_bounds[1] + travel_bounds[3]) / 2
-            center_lon = (travel_bounds[0] + travel_bounds[2]) / 2
-            m = folium.Map(location=[center_lat, center_lon], zoom_start=8, tiles="CartoDB Positron")
+            # Calculate unified bounds from travel and friction rasters
+            min_lat = min(travel_bounds[1], friction_bounds[1])
+            max_lat = max(travel_bounds[3], friction_bounds[3])
+            min_lon = min(travel_bounds[0], friction_bounds[0])
+            max_lon = max(travel_bounds[2], friction_bounds[2])
+
+            # Include market and price data bounds if available
+            if not prices_df.empty:
+                farmgate_lats = prices_df['Régions - Latitude'].dropna()
+                farmgate_lons = prices_df['Régions - Longitude'].dropna()
+                min_lat = min(min_lat, farmgate_lats.min()) if not farmgate_lats.empty else min_lat
+                max_lat = max(max_lat, farmgate_lats.max()) if not farmgate_lats.empty else max_lat
+                min_lon = min(min_lon, farmgate_lons.min()) if not farmgate_lons.empty else min_lon
+                max_lon = max(max_lon, farmgate_lons.max()) if not farmgate_lons.empty else max_lon
+            if not retail_df.empty:
+                retail_lats = retail_df['latitude'].dropna()
+                retail_lons = retail_df['longitude'].dropna()
+                min_lat = min(min_lat, retail_lats.min()) if not retail_lats.empty else min_lat
+                max_lat = max(max_lat, retail_lats.max()) if not retail_lats.empty else max_lat
+                min_lon = min(min_lon, retail_lons.min()) if not retail_lons.empty else min_lon
+                max_lon = max(max_lon, retail_lons.max()) if not retail_lons.empty else max_lon
+            if markets:
+                for feature in markets.get('features', []):
+                    if feature['geometry']['type'] == 'Point':
+                        lon, lat = feature['geometry']['coordinates']
+                        min_lat = min(min_lat, lat)
+                        max_lat = max(max_lat, lat)
+                        min_lon = min(min_lon, lon)
+                        max_lon = max(max_lon, lon)
+
+            # Create map and fit to bounds
+            m = folium.Map(location=[(min_lat + max_lat) / 2, (min_lon + max_lon) / 2], zoom_start=6, tiles="CartoDB Positron")
+            folium.FitBounds([
+                [min_lat, min_lon],
+                [max_lat, max_lon]
+            ]).add_to(m)
 
             # Add Roads Layer
             if show_roads and roads_filtered:
@@ -414,7 +446,7 @@ def main():
                     cross_origin=False
                 ).add_to(m)
 
-            # Add Legends
+            # Add Legends with adjusted positioning
             if show_travel:
                 travel_legend_html = """
                 {% macro html(this, kwargs) %}
@@ -453,12 +485,12 @@ def main():
                 m.get_root().add_child(friction_legend)
 
             # Add MiniMap and Fullscreen
-            MiniMap(tiles='OpenStreetMap', position='bottomleft').add_to(m)
+            MiniMap(tiles='OpenStreetMap', position='bottomleft', width=150, height=150).add_to(m)
             Fullscreen(position='topright', title='Expand', title_cancel='Exit').add_to(m)
 
             folium.LayerControl(collapsed=False).add_to(m)
             with st.spinner("Rendering map..."):
-                st_folium(m, width=1400, height=1000, key="folium_map")
+                st_folium(m, width=1400, height=800, key="folium_map")
         except Exception as e:
             st.error(f"Failed to render map: {e}. Please check data or coordinates.")
 
