@@ -117,7 +117,7 @@ def load_price_data(file_path):
         prices_df['Price'] = pd.to_numeric(prices_df['Price'], errors='coerce')
         prices_df['Year'] = pd.to_numeric(prices_df['Year'], errors='coerce')
         prices_df['Month'] = pd.to_numeric(prices_df['Month'], errors='coerce')
-        prices_df = prices_df.dropna(subset=['Price', 'Year', 'Month', 'Régions - Latitude', 'Régions - Longitude'])
+        prices_df = prices_df.dropna(subset=['Price', 'Year', 'Month', 'Régions - Latitude', 'Régions - Longitude', 'commodity_id'])
         return prices_df
     except Exception as e:
         st.error(f"Error reading farmgate prices file {file_path}: {e}")
@@ -135,7 +135,7 @@ def load_retail_data(file_path):
         retail_df['Price'] = pd.to_numeric(retail_df['Price'], errors='coerce')
         retail_df['Year'] = pd.to_numeric(retail_df['Year'], errors='coerce')
         retail_df['Month'] = pd.to_numeric(retail_df['Month'], errors='coerce')
-        retail_df = retail_df.dropna(subset=['Price', 'Year', 'Month', 'latitude', 'longitude'])
+        retail_df = retail_df.dropna(subset=['Price', 'Year', 'Month', 'latitude', 'longitude', 'commodity_id'])
         return retail_df
     except Exception as e:
         st.error(f"Error reading retail prices file {file_path}: {e}")
@@ -219,13 +219,13 @@ def main():
     friction_png_path, friction_image_bounds = generate_friction_image(friction_data, friction_bounds)
 
     # Validate price data columns
-    farmgate_required_columns = ['Régions Name', 'Commodity', 'commodity_english', 'Price', 'Unit2', 'Régions - Latitude', 'Régions - Longitude', 'Year', 'Month']
-    retail_required_columns = ['market', 'commodity', 'Price', 'Unit2', 'latitude', 'longitude', 'Year', 'Month']
+    farmgate_required_columns = ['Régions Name', 'Commodity', 'commodity_english', 'commodity_id', 'Price', 'Unit2', 'Régions - Latitude', 'Régions - Longitude', 'Year', 'Month']
+    retail_required_columns = ['market', 'commodity', 'commodity_id', 'Price', 'Unit2', 'latitude', 'longitude', 'Year', 'Month']
     if not prices_df.empty and any(col not in prices_df.columns for col in farmgate_required_columns):
-        st.error("Missing required columns in farmgate prices")
+        st.error(f"Missing required columns in farmgate prices: {', '.join([col for col in farmgate_required_columns if col not in prices_df.columns])}")
         prices_df = pd.DataFrame()
     if not retail_df.empty and any(col not in retail_df.columns for col in retail_required_columns):
-        st.error("Missing required columns in retail prices")
+        st.error(f"Missing required columns in retail prices: {', '.join([col for col in retail_required_columns if col not in retail_df.columns])}")
         retail_df = pd.DataFrame()
 
     # Tabs for different views
@@ -233,7 +233,7 @@ def main():
 
     with tab1:
         st.subheader("Interactive Map")
-        st.markdown("Explore travel time, friction surfaces, markets, roads, and commodity prices.")
+        st.markdown("Explore travel time, friction surfaces, market locations, road networks, and commodity prices.")
 
         # Filter controls
         st.sidebar.header("Map Filters")
@@ -251,15 +251,32 @@ def main():
         selected_month_name = st.sidebar.selectbox("Select Month", [month_names.get(m, str(m)) for m in available_months], index=available_months.index(latest_month) if latest_month else 0, key="month_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
         selected_month = next((k for k, v in month_names.items() if v == selected_month_name), selected_month_name) if selected_month_name else None
 
-        # Filter commodities to those present in both farmgate and retail
-        commodities = []
+        # Filter commodities to those present in both farmgate and retail based on commodity_id
+        commodity_options = []
+        commodity_id_to_name = {}
         if not prices_df.empty and not retail_df.empty:
-            farmgate_commodities = set(prices_df['commodity_english'].unique())
-            retail_commodities = set(retail_df['commodity'].unique())
-            commodities = sorted(list(farmgate_commodities.intersection(retail_commodities)))
-        if not commodities:
-            st.warning("No commodities found in both farmgate and retail datasets. Please check your data.")
-        selected_commodities = st.sidebar.multiselect("Select Commodities", commodities, default=commodities, key="commodity_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
+            farmgate_commodities = set(prices_df['commodity_id'].unique())
+            retail_commodities = set(retail_df['commodity_id'].unique())
+            common_commodity_ids = farmgate_commodities.intersection(retail_commodities)
+            # Map commodity_id to commodity_english for display
+            for cid in common_commodity_ids:
+                # Prefer commodity_english from farmgate for display
+                name = prices_df[prices_df['commodity_id'] == cid]['commodity_english'].iloc[0] if cid in prices_df['commodity_id'].values else retail_df[retail_df['commodity_id'] == cid]['commodity'].iloc[0]
+                commodity_options.append(cid)
+                commodity_id_to_name[cid] = name
+            commodity_options = sorted(commodity_options, key=lambda x: commodity_id_to_name[x])
+        if not commodity_options:
+            st.error("No commodities found in both farmgate and retail datasets with common commodity IDs. Please check your data.")
+            st.stop()
+        # Display commodity names but store IDs
+        selected_commodity_ids = st.sidebar.multiselect(
+            "Select Commodities",
+            options=commodity_options,
+            format_func=lambda x: commodity_id_to_name.get(x, str(x)),
+            default=commodity_options,
+            key="commodity_select",
+            on_change=lambda: st.session_state.update({'map_data_updated': True})
+        )
 
         # Layer toggles
         st.sidebar.header("Map Layers")
@@ -271,31 +288,32 @@ def main():
         show_retail = st.sidebar.checkbox("Retail Prices", value=True)
 
         # Update map data
-        if st.session_state.map_data_updated or not st.session_state.latest_farmgate_prices.empty or not st.session_state.latest_retail_prices.empty:
+        if st.session_state.map_data_updated or not st.session_state.latest_farmgate_prices.empty or not st.session_state.latest_retail_prices.empty():
             latest_farmgate_prices = pd.DataFrame()
-            latest_retail_prices = pd.DataFrame()
-            if not prices_df.empty:
+            latest_retail_prices = []
+            if not prices_df.empty():
                 filtered_farmgate = prices_df[prices_df['Year'] == selected_year] if selected_year else prices_df
                 if selected_month:
-                    filtered_farmgate = filtered_farmgate[filtered_farmgate['Month'] == selected_month]
-                filtered_farmgate['Date'] = pd.to_datetime(filtered_farmgate[['Year', 'Month']].assign(day=1), errors='coerce')
-                filtered_farmgate = filtered_farmgate.dropna(subset=['Date'])
-                latest_farmgate_prices = filtered_farmgate.sort_values('Date').groupby(['Régions Name', 'Commodity']).last().reset_index()
-                if selected_commodities:
-                    latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_english'].isin(selected_commodities)]
+                    filtered_farmgate = filtered_farmgate[filtered_farmgate['Month'] == filtered_farmgate]
+                    filtered_farmgate['Month'] == selected_month
+                filtered_farmgate['Date'] = pd.to_datetime(filtered_farmgate[['Year', 'Month']].assign(day=1), errors='coerce'])
+                filtered_farmedgate = filtered_dfarmgate.dropna(subset=['Date'])
+                latest_farmgate_prices = filtered_farmgate.sort_values('Date']).groupby(['Régions Name', 'Commodity']).last().reset_index()]
+                if selected_commodity_ids:
+                    latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_id'].isin(selected_commodity_ids])]
                 if len(latest_farmgate_prices) > 500:
                     latest_farmgate_prices = latest_farmgate_prices.head(500)
                     st.warning("Limited to 500 farmgate price markers for performance.")
 
-            if not retail_df.empty:
+            if not retail_df.empty():
                 filtered_retail = retail_df[retail_df['Year'] == selected_year] if selected_year else retail_df
                 if selected_month:
                     filtered_retail = filtered_retail[filtered_retail['Month'] == selected_month]
-                filtered_retail['Date'] = pd.to_datetime(filtered_retail[['Year', 'Month']].assign(day=1), errors='coerce')
+                filtered_retail['Date'] = pd.to_datetime(filtered_retail[['Year', 'Month']].assign(day=1)], errors='coerce')
                 filtered_retail = filtered_retail.dropna(subset=['Date'])
-                latest_retail_prices = filtered_retail.sort_values('Date').groupby(['market', 'commodity']).last().reset_index()
-                if selected_commodities:
-                    latest_retail_prices = latest_retail_prices[latest_retail_prices['commodity'].isin(selected_commodities)]
+                latest_retail_prices = filtered_retail.sort_values('Date']).groupby(['market', 'commodity_id']).last().reset_index()]]
+                if selected_commodity_ids:
+                    latest_retail_prices = latest_retail_prices[latest_retail_prices['commodity_id'].isin(selected_commodity_ids])]
                 if len(latest_retail_prices) > 500:
                     latest_retail_prices = latest_retail_prices.head(500)
                     st.warning("Limited to 500 retail price markers for performance.")
@@ -401,9 +419,10 @@ def main():
                 <div style="background:#ffeda0;width:20px;height:20px;display:inline-block;"></div> 10–30<br>
                 <div style="background:#feb24c;width:20px;height:20px;display:inline-block;"></div> 30–60<br>
                 <div style="background:#fd8d3c;width:20px;height:20px;display:inline-block;"></div> 60–120<br>
-                <div style="background:#f03b20;width:20px;height:20px;display:inline-block;"></div> 120–240<br>
-                <div style="background:#bd0026;width:20px;height:20px;display:inline-block;"></div> 240–1440<br>
-                <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> >1440</div></div>
+                <div style="background:#f03b20;width:20px;height:20px;display:inline-block;"></div> 120–240
+                <div style="background:#bd0026;width:20px;height:20px;display:inline-block;"></div> 240–1440
+                <div style="background:#800026;width:20px;height:20px;display:inline-block;"></div> >1440
+                </div></div>
                 {% endmacro %}
                 """
                 travel_legend = MacroElement()
@@ -470,40 +489,48 @@ def main():
 
     with tab3:
         st.subheader("Price Trends")
-        if not prices_df.empty and commodities:
+        if not prices_df.empty and commodity_options:
             st.markdown("### Farmgate Price Trends")
-            commodity = st.selectbox("Select Commodity for Farmgate Trend", commodities)
+            selected_commodity_id = st.selectbox(
+                "Select Commodity for Farmgate Trend",
+                options=commodity_options,
+                format_func=lambda x: commodity_id_to_name.get(x, str(x))
+            )
             try:
-                trend_data = prices_df[prices_df['commodity_english'] == commodity][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
+                trend_data = prices_df[prices_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if trend_data.empty:
-                    st.warning(f"No trend data available for {commodity}.")
+                    st.warning(f"No trend data available for {commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)}.")
                 else:
                     trend_data['Date'] = pd.to_datetime(trend_data[['Year', 'Month']].assign(day=1), errors='coerce')
                     if trend_data['Date'].isna().any():
                         st.warning("Some dates could not be parsed. Skipping invalid entries.")
                         trend_data = trend_data.dropna(subset=['Date'])
                     if not trend_data.empty:
-                        fig = px.line(trend_data, x='Date', y='Price', title=f"{commodity} Farmgate Price Trend")
+                        fig = px.line(trend_data, x='Date', y='Price', title=f"{commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)} Farmgate Price Trend")
                         st.plotly_chart(fig)
                     else:
                         st.warning("No valid trend data after processing.")
             except Exception as e:
                 st.error(f"Failed to generate farmgate price trend: {e}")
 
-        if not retail_df.empty and commodities:
+        if not retail_df.empty and commodity_options:
             st.markdown("### Retail Price Trends")
-            commodity = st.selectbox("Select Commodity for Retail Trend", commodities)
+            selected_commodity_id = st.selectbox(
+                "Select Commodity for Retail Trend",
+                options=commodity_options,
+                format_func=lambda x: commodity_id_to_name.get(x, str(x))
+            )
             try:
-                trend_data = retail_df[retail_df['commodity'] == commodity][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
+                trend_data = retail_df[retail_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if trend_data.empty:
-                    st.warning(f"No trend data available for {commodity}.")
+                    st.warning(f"No trend data available for {commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)}.")
                 else:
                     trend_data['Date'] = pd.to_datetime(trend_data[['Year', 'Month']].assign(day=1), errors='coerce')
                     if trend_data['Date'].isna().any():
                         st.warning("Some dates could not be parsed. Skipping invalid entries.")
                         trend_data = trend_data.dropna(subset=['Date'])
                     if not trend_data.empty:
-                        fig = px.line(trend_data, x='Date', y='Price', title=f"{commodity} Retail Price Trend")
+                        fig = px.line(trend_data, x='Date', y='Price', title=f"{commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)} Retail Price Trend")
                         st.plotly_chart(fig)
                     else:
                         st.warning("No valid trend data after processing.")
