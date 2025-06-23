@@ -147,15 +147,19 @@ selected_year = st.sidebar.selectbox("Select Year", common_years, index=len(comm
 if not common_years:
     st.sidebar.warning("No common years found between farmgate and retail prices.")
 
+# Map numeric months to names
+month_names = {1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
+               7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"}
 available_months = sorted(list(set(prices_df['Month'].unique()) | set(retail_df['Month'].unique()))) if not prices_df.empty or not retail_df.empty else []
-selected_month = st.sidebar.selectbox("Select Month", available_months, index=len(available_months)-1) if available_months else None
+selected_month_name = st.sidebar.selectbox("Select Month", [month_names.get(m, str(m)) for m in available_months], index=len(available_months)-1) if available_months else None
+selected_month = next((k for k, v in month_names.items() if v == selected_month_name), selected_month_name) if selected_month_name else None
 if not available_months:
     st.sidebar.error("No months available for the selected year(s).")
 
 commodities = sorted(list(set(prices_df['commodity_english'].unique()) | set(retail_df['commodity'].unique()))) if not prices_df.empty or not retail_df.empty else []
 selected_commodities = st.sidebar.multiselect("Select Commodities", commodities, default=commodities) if commodities else []
 
-if st.sidebar.button("Apply Filters"):
+if st.sidebar.button("Apply Filters and Render Map"):
     # Filter datasets
     latest_farmgate_prices = pd.DataFrame()
     latest_retail_prices = pd.DataFrame()
@@ -180,15 +184,8 @@ if st.sidebar.button("Apply Filters"):
             latest_retail_prices = latest_retail_prices[latest_retail_prices['commodity'].isin(selected_commodities)]
         if latest_retail_prices.empty:
             st.warning("No retail price data available for the selected period")
-else:
-    latest_farmgate_prices = pd.DataFrame()
-    latest_retail_prices = pd.DataFrame()
-    st.warning("Click 'Apply Filters' to load and display data.")
 
-# -------------------------------
-# Create Folium Map
-# -------------------------------
-if st.button("Render Map"):
+    # Render Map
     st.subheader("Interactive Map")
     center_lat = (travel_bounds[1] + travel_bounds[3]) / 2
     center_lon = (travel_bounds[0] + travel_bounds[2]) / 2
