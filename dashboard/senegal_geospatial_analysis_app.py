@@ -1,6 +1,6 @@
 """
 Streamlit application to visualize travel time, friction surfaces, farmgate prices, and retail prices in Senegal,
-overlaying market locations and roads.
+overlaying market locations and roads. Allows filtering by year and month.
 Inputs:
 - Travel time GeoTIFF: Accessibility to cities (minutes)
 - Friction GeoTIFF: Travel speed friction surface (min/m)
@@ -55,12 +55,8 @@ st.set_page_config(page_title="Senegal Agrifood Geospatial Analysis", layout="wi
 st.title("Senegal Agrifood Geospatial Analysis")
 st.markdown("""
 This app visualizes travel time to cities, friction surfaces, farmgate prices, retail prices, markets, and roads in Senegal.
-Use the sidebar to navigate and toggle map layers.
+Use the sidebar to select year and month for price data and toggle map layers.
 """)
-
-# Sidebar
-st.sidebar.header("Controls")
-st.sidebar.markdown("Select options to customize the display.")
 
 # -------------------------------
 # 1. Load and Process Travel Time Raster
@@ -79,38 +75,7 @@ except rasterio.errors.RasterioIOError as e:
 # Mask nodata values
 data = np.ma.masked_equal(travel_time, nodata) if nodata is not None else np.ma.masked_invalid(travel_time)
 
-# -------------------------------
-# 2. Summary Statistics
-# -------------------------------
-with st.expander("Travel Time Summary Statistics"):
-    st.write(f"**Min:** {data.min():.2f} min")
-    st.write(f"**Max:** {data.max():.2f} min")
-    st.write(f"**Mean:** {data.mean():.2f} min")
-    st.write(f"**Std Dev:** {data.std():.2f} min")
 
-# -------------------------------
-# 3. Percentiles
-# -------------------------------
-percentiles = np.percentile(data.compressed(), [5, 25, 50, 75, 95])
-with st.expander("Travel Time Percentiles"):
-    st.write(f"**5th:** {percentiles[0]:.2f} min")
-    st.write(f"**25th:** {percentiles[1]:.2f} min")
-    st.write(f"**50th (median):** {percentiles[2]:.2f} min")
-    st.write(f"**75th:** {percentiles[3]:.2f} min")
-    st.write(f"**95th:** {percentiles[4]:.2f} min")
-
-# -------------------------------
-# 4. Histogram
-# -------------------------------
-st.subheader("Histogram of Travel Time to Cities")
-fig, ax = plt.subplots(figsize=(10, 5))
-ax.hist(data.compressed(), bins=50, color='skyblue', edgecolor='black')
-ax.set_title('Histogram of Travel Time to Cities (min)')
-ax.set_xlabel('Travel Time (minutes)')
-ax.set_ylabel('Pixel Count')
-ax.grid(True)
-plt.tight_layout()
-st.pyplot(fig)
 
 # -------------------------------
 # 5. Load and Process Friction Raster
@@ -166,18 +131,6 @@ invalid_farmgate_coords = prices_df[['Régions - Latitude', 'Régions - Longitud
 if invalid_farmgate_coords.any():
     st.warning(f"Found {invalid_farmgate_coords.sum()} rows with invalid coordinates in farmgate prices")
 
-# Filter farmgate prices to most recent year (2016 based on sample data)
-farmgate_year = prices_df['Year'].max()
-prices_df = prices_df[prices_df['Year'] == farmgate_year]
-st.info(f"Filtered farmgate prices to year {farmgate_year} with {len(prices_df)} rows")
-with st.expander("Unique Farmgate Commodities"):
-    st.write(prices_df['commodity_english'].unique().tolist())
-
-# Group by region and commodity, take the most recent price
-prices_df['Date'] = pd.to_datetime(prices_df[['Year', 'Month']].assign(day=1))
-latest_farmgate_prices = prices_df.sort_values('Date').groupby(['Régions Name', 'Commodity']).last().reset_index()
-st.info(f"Processed {len(latest_farmgate_prices)} unique farmgate price entries")
-
 # -------------------------------
 # 8. Load and Process Retail Prices
 # -------------------------------
@@ -204,20 +157,76 @@ invalid_retail_coords = retail_df[['latitude', 'longitude']].isna().any(axis=1)
 if invalid_retail_coords.any():
     st.warning(f"Found {invalid_retail_coords.sum()} rows with invalid coordinates in retail prices")
 
-# Filter retail prices to most recent year (2000 based on sample data)
-retail_year = retail_df['Year'].max()
-retail_df = retail_df[retail_df['Year'] == retail_year]
-st.info(f"Filtered retail prices to year {retail_year} with {len(retail_df)} rows")
-with st.expander("Unique Retail Commodities"):
-    st.write(retail_df['commodity'].unique().tolist())
+# -------------------------------
+# 9. Year and Month Selection
+# -------------------------------
+st.sidebar.header("Filter Price Data")
+# Find common years
+common_years = sorted(list(set(prices_df['Year']).intersection(set(retail_df['Year']))))
+if not common_years:
+    st.sidebar.warning("No common years found between farmgate and retail prices. Using most recent years.")
+    farmgate_year = prices_df['Year'].max()
+    retail_year = retail_df['Year'].max()
+    selected_year = st.sidebar.selectbox("Select Year (Farmgate / Retail)", 
+                                         [f"{farmgate_year} (Farmgate), {retail_year} (Retail)"], 
+                                         index=0)
+    selected_year_farmgate = farmgate_year
+    selected_year_retail = retail_year
+else:
+    selected_year = st.sidebar.selectbox("Select Year", common_years, index=len(common_years)-1)
+    selected_year_farmgate = selected_year
+    selected_year_retail = selected_year
 
-# Group by market and commodity, take the most recent price
-retail_df['Date'] = pd.to_datetime(retail_df[['Year', 'Month']].assign(day=1))
-latest_retail_prices = retail_df.sort_values('Date').groupby(['market', 'commodity']).last().reset_index()
-st.info(f"Processed {len(latest_retail_prices)} unique retail price entries")
+# Filter datasets by selected year
+prices_df = prices_df[prices_df['Year'] == selected_year_farmgate]
+retail_df = retail_df[retail_df['Year'] == selected_year_retail]
+
+# Find available months
+farmgate_months = sorted(prices_df['Month'].unique()) if not prices_df.empty else []
+retail_months = sorted(retail_df['Month'].unique()) if not retail_df.empty else []
+available_months = sorted(list(set(farmgate_months + retail_months)))
+if not available_months:
+    st.sidebar.error("No months available for the selected year(s).")
+    selected_month = None
+else:
+    month_names = {1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
+                   7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"}
+    selected_month_name = st.sidebar.selectbox("Select Month", 
+                                               [month_names.get(m, m) for m in available_months], 
+                                               index=len(available_months)-1)
+    selected_month = [k for k, v in month_names.items() if v == selected_month_name][0] if selected_month_name in month_names.values() else selected_month_name
+
+# Filter datasets by selected month (if selected)
+if selected_month:
+    prices_df = prices_df[prices_df['Month'] == selected_month]
+    retail_df = retail_df[retail_df['Month'] == selected_month]
+
+# Display filtered data info
+st.info(f"Filtered farmgate prices to {selected_year_farmgate}-{selected_month:02d} with {len(prices_df)} rows")
+with st.expander("Unique Farmgate Commodities"):
+    st.write(prices_df['commodity_english'].unique().tolist() if not prices_df.empty else ["No data"])
+st.info(f"Filtered retail prices to {selected_year_retail}-{selected_month:02d} with {len(retail_df)} rows")
+with st.expander("Unique Retail Commodities"):
+    st.write(retail_df['commodity'].unique().tolist() if not retail_df.empty else ["No data"])
+
+# Group by region/market and commodity, take the most recent price
+if not prices_df.empty:
+    prices_df['Date'] = pd.to_datetime(prices_df[['Year', 'Month']].assign(day=1))
+    latest_farmgate_prices = prices_df.sort_values('Date').groupby(['Régions Name', 'Commodity']).last().reset_index()
+    st.info(f"Processed {len(latest_farmgate_prices)} unique farmgate price entries")
+else:
+    latest_farmgate_prices = pd.DataFrame()
+    st.warning("No farmgate price data available for the selected period")
+if not retail_df.empty:
+    retail_df['Date'] = pd.to_datetime(retail_df[['Year', 'Month']].assign(day=1))
+    latest_retail_prices = retail_df.sort_values('Date').groupby(['market', 'commodity']).last().reset_index()
+    st.info(f"Processed {len(latest_retail_prices)} unique retail price entries")
+else:
+    latest_retail_prices = pd.DataFrame()
+    st.warning("No retail price data available for the selected period")
 
 # -------------------------------
-# 9. Color Mapping for Travel Time
+# 10. Color Mapping for Travel Time
 # -------------------------------
 breaks = [0, 10, 30, 60, 120, 240, 1440, np.inf]
 colors = [
@@ -235,7 +244,7 @@ Image.fromarray(rgb).save(travel_png_path)
 travel_image_bounds = [[travel_bounds.bottom, travel_bounds.left], [travel_bounds.top, travel_bounds.right]]
 
 # -------------------------------
-# 10. Color Mapping for Friction
+# 11. Color Mapping for Friction
 # -------------------------------
 friction_breaks = [0, 0.001, 0.01, 0.1, 0.5, 1.0, 2.0, 5.0, np.inf]
 friction_colors = [
@@ -254,7 +263,7 @@ Image.fromarray(rgb_friction).save(friction_png_path)
 friction_image_bounds = [[friction_bounds.bottom, friction_bounds.left], [friction_bounds.top, friction_bounds.right]]
 
 # -------------------------------
-# 11. Create Folium Map
+# 12. Create Folium Map
 # -------------------------------
 st.subheader("Interactive Map")
 center_lat = (travel_bounds.bottom + travel_bounds.top) / 2
@@ -346,7 +355,7 @@ folium.raster_layers.ImageOverlay(
 ).add_to(m)
 
 # -------------------------------
-# 12. Add Travel Time Legend
+# 13. Add Travel Time Legend
 # -------------------------------
 travel_legend_html = """
 {% macro html(this, kwargs) %}
@@ -381,7 +390,7 @@ travel_legend._template = Template(travel_legend_html)
 m.get_root().add_child(travel_legend)
 
 # -------------------------------
-# 13. Add Friction Legend
+# 14. Add Friction Legend
 # -------------------------------
 friction_legend_html = """
 {% macro html(this, kwargs) %}
@@ -417,7 +426,7 @@ friction_legend._template = Template(friction_legend_html)
 m.get_root().add_child(friction_legend)
 
 # -------------------------------
-# 14. Render Map in Streamlit
+# 15. Render Map in Streamlit
 # -------------------------------
 folium.LayerControl().add_to(m)
 st_folium(m, width=1200, height=600)
