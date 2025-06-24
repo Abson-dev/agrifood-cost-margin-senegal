@@ -42,6 +42,8 @@ if 'map_render_key' not in st.session_state:
     st.session_state['map_render_key'] = 0
 if 'commodity_map' not in st.session_state:
     st.session_state['commodity_map'] = {}
+if 'map_height' not in st.session_state:
+    st.session_state['map_height'] = 800  # Default map height
 
 # -------------------------------
 # Helper Functions
@@ -243,7 +245,6 @@ def load_retail_data(file_path):
 # -------------------------------
 def main():
     # Custom CSS for styling and responsiveness
-    map_height = st.session_state.get('map_height', 800)
     st.markdown(f"""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
@@ -254,7 +255,7 @@ def main():
     .stSelectbox, .stMultiselect {{ background-color: #f3f4f6; border-radius: 8px; }}
     .header {{ background-color: #1e3a8a; color: white; padding: 20px; border-radius: 8px; }}
     .footer {{ background-color: #1e3a8a; color: white; padding: 10px; text-align: center; margin-top: 20px; }}
-    .folium-map {{ min-height: 400px; height: {map_height}px; max-height: 1000px; width: 100% !important; }}
+    .folium-map {{ min-height: 400px; height: {st.session_state['map_height']}px; max-height: 1000px; width: 100% !important; }}
     .stApp [data-testid="stMapContainer"] {{ 
         margin-top: 10px; 
         width: 100% !important; 
@@ -400,8 +401,7 @@ def main():
         show_retail = st.sidebar.checkbox("Retail Prices", value=False)
 
         # Map height control
-        map_height = st.sidebar.slider("Map Height (px)", 400, 1000, 800, key="map_height")
-        st.session_state.map_height = map_height
+        st.sidebar.slider("Map Height (px)", 400, 1000, st.session_state['map_height'], key="map_height")
 
         # Update map data
         if st.session_state.map_data_updated or st.session_state.latest_farmgate_prices.empty or st.session_state.latest_retail_prices.empty:
@@ -540,7 +540,7 @@ def main():
                     Fullscreen(position='topright', title='Expand', title_cancel='Exit').add_to(m)
 
                     folium.LayerControl(collapsed=False).add_to(m)
-                    st_folium(m, use_container_width=True, height=map_height, key=f"folium_map_{st.session_state.map_render_key}")
+                    st_folium(m, use_container_width=True, height=st.session_state['map_height'], key=f"folium_map_{st.session_state.map_render_key}")
 
                     # Add Dynamic Legends
                     if show_travel or show_friction:
