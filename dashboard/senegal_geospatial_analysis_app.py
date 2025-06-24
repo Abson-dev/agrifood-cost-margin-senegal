@@ -11,6 +11,7 @@ from streamlit_folium import st_folium
 import plotly.express as px
 import plotly.graph_objects as go
 import uuid
+import atexit
 
 # -------------------------------
 # Configuration: File Paths
@@ -53,6 +54,12 @@ def generate_colors(data, breaks, colors):
         rgb[mask] = colors[i]
     return rgb
 
+def cleanup_temp_files(*files):
+    """Clean up temporary files."""
+    for file in files:
+        if os.path.exists(file):
+            os.remove(file)
+
 # -------------------------------
 # Load and Process Rasters
 # -------------------------------
@@ -78,6 +85,7 @@ def generate_travel_image(data, bounds):
     rgb = generate_colors(data, breaks, colors)
     travel_png_path = f'travel_time_{str(uuid.uuid4())}.png'
     Image.fromarray(rgb).save(travel_png_path)
+    atexit.register(cleanup_temp_files, travel_png_path)
     return travel_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
 
 @st.cache_data(hash_funcs={np.ma.MaskedArray: lambda x: hash((x.data.tobytes(), x.mask.tobytes()))})
@@ -87,6 +95,7 @@ def generate_friction_image(data, bounds):
     rgb = generate_colors(data, friction_breaks, friction_colors)
     friction_png_path = f'friction_surface_{str(uuid.uuid4())}.png'
     Image.fromarray(rgb).save(friction_png_path)
+    atexit.register(cleanup_temp_files, friction_png_path)
     return friction_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
 
 # -------------------------------
@@ -103,14 +112,12 @@ def load_geojson(file_path, max_features=500, is_roads=False):
         features = data.get('features', [])
         valid_features = []
         invalid_count = 0
-        # Validate and filter features
         for feature in features:
             try:
                 geom = feature.get('geometry', {})
                 if not geom or 'coordinates' not in geom:
                     invalid_count += 1
                     continue
-                # Basic coordinate validation
                 coords = geom['coordinates']
                 if geom['type'] == 'Point':
                     if not (isinstance(coords, list) and len(coords) == 2 and all(isinstance(c, (int, float)) for c in coords)):
@@ -120,17 +127,14 @@ def load_geojson(file_path, max_features=500, is_roads=False):
                         invalid_count += 1
                         continue
                 elif geom['type'] in ['LineString', 'MultiLineString']:
-                    # Skip complex validation for LineString, just check basic structure
                     if geom['type'] == 'LineString' and not all(isinstance(c, list) and len(c) == 2 for c in coords):
                         invalid_count += 1
                         continue
                 else:
                     invalid_count += 1
                     continue
-                # For roads, prioritize major types if available
                 if is_roads and 'properties' in feature:
                     highway = feature['properties'].get('highway', '')
-                    # Include only major roads if highway property exists
                     if highway and highway not in ['motorway', 'trunk', 'primary', 'secondary']:
                         continue
                 valid_features.append(feature)
@@ -139,7 +143,6 @@ def load_geojson(file_path, max_features=500, is_roads=False):
                 continue
         if invalid_count > 0:
             st.warning(f"Skipped {invalid_count} invalid features in {file_path}")
-        # Limit features
         if len(valid_features) > max_features:
             st.warning(f"GeoJSON file {file_path} has {len(valid_features)} valid features. Limiting to {max_features} for performance.")
             valid_features = valid_features[:max_features]
@@ -207,7 +210,13 @@ def main():
     .stSelectbox, .stMultiselect { background-color: #f3f4f6; border-radius: 8px; }
     .header { background-color: #1e3a8a; color: white; padding: 20px; border-radius: 8px; }
     .footer { background-color: #1e3a8a; color: white; padding: 10px; text-align: center; margin-top: 20px; }
-    .stApp [data-testid="stMapContainer"] { margin-top: 10px; min-height: 600px; }
+    .stApp [data-testid="stMapContainer"] { 
+        margin-top: 10px; 
+        width: 100% !important; 
+        min-height: 400px; 
+        max-height: 100vh; 
+        overflow: auto; 
+    }
     .legend-container { background-color: white; border: 2px solid grey; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3); margin-top: 10px; }
     .legend-title { font-weight: bold; font-size: 14px; margin-bottom: 10px; }
     .legend-item { display: flex; align-items: center; margin-bottom: 5px; font-size: 14px; }
@@ -249,7 +258,7 @@ def main():
     # Validate files
     for key, path in st.session_state.file_paths.items():
         if not validate_file(path, key.capitalize()):
-            st.stop()
+            return
 
     # Load data with progress bar
     with st.spinner("Loading data..."):
@@ -268,7 +277,7 @@ def main():
 
     if travel_time is None or friction_data is None:
         st.error("Failed to load raster data. Please check the files and try again.")
-        st.stop()
+        return
 
     # Generate raster images
     travel_png_path, travel_image_bounds = generate_travel_image(travel_time, travel_bounds)
@@ -318,7 +327,7 @@ def main():
             commodity_options = sorted(commodity_options, key=lambda x: commodity_id_to_name[x])
         if not commodity_options:
             st.error("No commodities found in both farmgate and retail datasets with common commodity IDs. Please check your data.")
-            st.stop()
+            return
         selected_commodity_ids = st.sidebar.multiselect(
             "Select Commodities",
             options=commodity_options,
@@ -337,6 +346,9 @@ def main():
         show_farmgate = st.sidebar.checkbox("Farmgate Prices", value=False)
         show_retail = st.sidebar.checkbox("Retail Prices", value=False)
 
+        # Map height control
+        map_height = st.sidebar.slider("Map Height (px)", 400, 1000, 800, key="map_height")
+
         # Update map data
         if st.session_state.map_data_updated or st.session_state.latest_farmgate_prices.empty or st.session_state.latest_retail_prices.empty:
             latest_farmgate_prices = pd.DataFrame()
@@ -354,7 +366,7 @@ def main():
                     latest_farmgate_prices = latest_farmgate_prices.head(500)
                     st.warning("Limited to 500 farmgate price markers for performance.")
             if not retail_df.empty:
-                filtered_retail = retail_df[retail_df['Year'] == selected_year] if selected_year else retail_df
+                filtered_retail = retail_df[retail_df['Year'] == selected_year]
                 if selected_month:
                     filtered_retail = filtered_retail[filtered_retail['Month'] == selected_month]
                 filtered_retail['Date'] = pd.to_datetime(filtered_retail[['Year', 'Month']].assign(day=1), errors='coerce')
@@ -367,7 +379,7 @@ def main():
                     latest_retail_prices = latest_retail_prices[latest_retail_prices['commodity_id'].isin(selected_commodity_ids)]
                 if len(latest_retail_prices) > 500:
                     latest_retail_prices = latest_retail_prices.head(500)
-                    st.warning("Limited to 500 retail price markers for performance.")
+                    st.warning("Limited to 500 retail price markers.")
             st.session_state.latest_farmgate_prices = latest_farmgate_prices
             st.session_state.latest_retail_prices = latest_retail_prices
             st.session_state.map_data_updated = False
@@ -390,13 +402,13 @@ def main():
                         folium.GeoJson(
                             roads_filtered,
                             name="Roads",
-                            style_function=lambda x: {'color': '#3b82f6', 'weight': 1, 'opacity': 0.7}
+                            style_function=lambda x: {'color': 'black', 'weight': 1, 'opacity': 0.7}
                         ).add_to(m)
 
                     # Add Markets Layer
                     if show_markets and markets:
                         market_group = folium.FeatureGroup(name="Markets", show=True)
-                        valid_markets = 0
+                        valid_markers = 0
                         for feature in markets.get('features', []):
                             if feature['geometry']['type'] == 'Point' and all(isinstance(c, (int, float)) for c in feature['geometry']['coordinates']):
                                 coords = feature['geometry']['coordinates'][::-1]
@@ -406,8 +418,8 @@ def main():
                                     popup=popup,
                                     icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
                                 ).add_to(market_group)
-                                valid_markets += 1
-                        if valid_markets == 0:
+                                valid_markers += 1
+                        if valid_markers == 0:
                             st.warning("No valid market locations found.")
                         else:
                             market_group.add_to(m)
@@ -471,7 +483,7 @@ def main():
                     Fullscreen(position='topright', title='Expand', title_cancel='Exit').add_to(m)
 
                     folium.LayerControl(collapsed=False).add_to(m)
-                    st_folium(m, use_container_width=True, height=600, key=f"folium_map_{st.session_state.map_render_key}")
+                    st_folium(m, use_container_width=True, height=map_height, key=f"folium_map_{st.session_state.map_render_key}")
 
                     # Add Legends Below Map (Travel on Left, Friction on Right)
                     if show_travel or show_friction:
@@ -536,9 +548,9 @@ def main():
                                 </div>
                                 """, unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"Map rendering failed: {str(e)}. Please check data files or coordinates.")
+                    st.error(f"Map rendering failed: {str(e)}. Please check your data files or coordinates.")
                 finally:
-                    st.spinner(False)
+                    st.spinner()
 
     with tab2:
         st.subheader("Data Summary")
