@@ -9,3 +9,4 @@ branca
 plotly
 geopy
 openpyxl
+geopandas 
