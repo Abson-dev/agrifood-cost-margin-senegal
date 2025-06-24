@@ -7,5 +7,4 @@ streamlit
 streamlit-folium
 branca
 plotly
-geodesic
 geopy
