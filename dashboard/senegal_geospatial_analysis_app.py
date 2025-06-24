@@ -364,9 +364,11 @@ def main():
                     latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_id'].isin(selected_commodity_ids)]
                 if len(latest_farmgate_prices) > 500:
                     latest_farmgate_prices = latest_farmgate_prices.head(500)
-                    st.warning("Limited to 500 farmgate price markers for performance.")
+                    st.warning("Limited to 500 farmgate price markers for —
+
+System: performance.")
             if not retail_df.empty:
-                filtered_retail = retail_df[retail_df['Year'] == selected_year]
+                filtered_retail = retail_df[retail_df['Year'] == selected_year] if selected_year else retail_df
                 if selected_month:
                     filtered_retail = filtered_retail[filtered_retail['Month'] == selected_month]
                 filtered_retail['Date'] = pd.to_datetime(filtered_retail[['Year', 'Month']].assign(day=1), errors='coerce')
@@ -379,7 +381,7 @@ def main():
                     latest_retail_prices = latest_retail_prices[latest_retail_prices['commodity_id'].isin(selected_commodity_ids)]
                 if len(latest_retail_prices) > 500:
                     latest_retail_prices = latest_retail_prices.head(500)
-                    st.warning("Limited to 500 retail price markers.")
+                    st.warning("Limited to 500 retail price markers for performance.")
             st.session_state.latest_farmgate_prices = latest_farmgate_prices
             st.session_state.latest_retail_prices = latest_retail_prices
             st.session_state.map_data_updated = False
@@ -402,13 +404,13 @@ def main():
                         folium.GeoJson(
                             roads_filtered,
                             name="Roads",
-                            style_function=lambda x: {'color': 'black', 'weight': 1, 'opacity': 0.7}
+                            style_function=lambda x: {'color': '#3b82f6', 'weight': 1, 'opacity': 0.7}
                         ).add_to(m)
 
                     # Add Markets Layer
                     if show_markets and markets:
                         market_group = folium.FeatureGroup(name="Markets", show=True)
-                        valid_markers = 0
+                        valid_markets = 0
                         for feature in markets.get('features', []):
                             if feature['geometry']['type'] == 'Point' and all(isinstance(c, (int, float)) for c in feature['geometry']['coordinates']):
                                 coords = feature['geometry']['coordinates'][::-1]
@@ -418,8 +420,8 @@ def main():
                                     popup=popup,
                                     icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
                                 ).add_to(market_group)
-                                valid_markers += 1
-                        if valid_markers == 0:
+                                valid_markets += 1
+                        if valid_markets == 0:
                             st.warning("No valid market locations found.")
                         else:
                             market_group.add_to(m)
@@ -548,9 +550,9 @@ def main():
                                 </div>
                                 """, unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"Map rendering failed: {str(e)}. Please check your data files or coordinates.")
+                    st.error(f"Map rendering failed: {str(e)}. Please check data files or coordinates.")
                 finally:
-                    st.spinner()
+                    st.spinner(False)
 
     with tab2:
         st.subheader("Data Summary")
@@ -563,14 +565,16 @@ def main():
     with tab3:
         st.subheader("Price Trends")
         if not prices_df.empty and not retail_df.empty and commodity_options:
-            st.markdown("### Farmgate and Retail Price Trends")
+            st.markdown("### Farmgate, Retail, and Gross Margin Trends")
             selected_commodity_id = st.selectbox(
                 "Select Commodity",
                 options=commodity_options,
                 format_func=lambda x: commodity_id_to_name.get(x, str(x)),
                 key="trend_commodity_select"
             )
+            show_gross_margin = st.checkbox("Show Gross Margin (Retail - Farmgate)", value=True, key="show_gross_margin")
             try:
+                # Calculate farmgate trend
                 farmgate_trend = prices_df[prices_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if not farmgate_trend.empty:
                     farmgate_trend['Date'] = pd.to_datetime(farmgate_trend[['Year', 'Month']].assign(day=1), errors='coerce')
@@ -579,6 +583,7 @@ def main():
                 else:
                     farmgate_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
 
+                # Calculate retail trend
                 retail_trend = retail_df[retail_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if not retail_trend.empty:
                     retail_trend['Date'] = pd.to_datetime(retail_trend[['Year', 'Month']].assign(day=1), errors='coerce')
@@ -587,8 +592,24 @@ def main():
                 else:
                     retail_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
 
-                if not farmgate_trend.empty or not retail_trend.empty:
-                    combined_trend = pd.concat([farmgate_trend, retail_trend], ignore_index=True)
+                # Calculate gross margin
+                if show_gross_margin and not farmgate_trend.empty and not retail_trend.empty:
+                    margin_trend = pd.merge(
+                        farmgate_trend[['Year', 'Month', 'Price', 'Date']],
+                        retail_trend[['Year', 'Month', 'Price', 'Date']],
+                        on=['Year', 'Month', 'Date'],
+                        how='inner',
+                        suffixes=('_farmgate', '_retail')
+                    )
+                    margin_trend['Price'] = margin_trend['Price_retail'] - margin_trend['Price_farmgate']
+                    margin_trend['Price Type'] = 'Gross Margin'
+                    margin_trend = margin_trend[['Date', 'Price', 'Price Type']].dropna(subset=['Price'])
+                else:
+                    margin_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
+
+                # Combine trends
+                if not farmgate_trend.empty or not retail_trend.empty or not margin_trend.empty:
+                    combined_trend = pd.concat([farmgate_trend, retail_trend, margin_trend], ignore_index=True)
                 else:
                     combined_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
 
@@ -616,11 +637,21 @@ def main():
                             marker=dict(size=6),
                             hovertemplate='%{x|%b %Y}<br>Price: %{y:.2f}<br>Type: Retail'
                         ))
+                    if show_gross_margin and 'Gross Margin' in combined_trend['Price Type'].values:
+                        fig.add_trace(go.Scatter(
+                            x=combined_trend[combined_trend['Price Type'] == 'Gross Margin']['Date'],
+                            y=combined_trend[combined_trend['Price Type'] == 'Gross Margin']['Price'],
+                            mode='lines+markers',
+                            name='Gross Margin',
+                            line=dict(color='#d62728', width=2, dash='dash'),
+                            marker=dict(size=6),
+                            hovertemplate='%{x|%b %Y}<br>Margin: %{y:.2f}<br>Type: Gross Margin'
+                        ))
 
                     fig.update_layout(
-                        title=f"{commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)} Price Trends",
+                        title=f"{commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)} Price and Margin Trends",
                         xaxis_title="Date",
-                        yaxis_title="Average Price (Unit2)",
+                        yaxis_title="Average Price/Margin (Unit2)",
                         font=dict(family="Roboto, sans-serif", size=12),
                         hovermode="x unified",
                         showlegend=True,
