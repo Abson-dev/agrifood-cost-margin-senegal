@@ -8,3 +8,6 @@ streamlit-folium
 branca
 plotly
 geopy
+xgboost 
+prophet 
+scikit-learn
