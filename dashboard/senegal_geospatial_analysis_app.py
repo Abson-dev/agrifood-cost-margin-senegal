@@ -13,6 +13,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 import uuid
 import atexit
+from sklearn.preprocessing import LabelEncoder
+from sklearn.ensemble import IsolationForest
+import xgboost as xgb
+from prophet import Prophet
 
 # -------------------------------
 # Configuration: File Paths
@@ -37,6 +41,10 @@ if 'file_paths' not in st.session_state:
     st.session_state['file_paths'] = DEFAULT_FILES.copy()
 if 'map_render_key' not in st.session_state:
     st.session_state['map_render_key'] = 0
+if 'ml_predictions' not in st.session_state:
+    st.session_state['ml_predictions'] = pd.DataFrame()
+if 'anomalies' not in st.session_state:
+    st.session_state['anomalies'] = pd.DataFrame()
 
 # -------------------------------
 # Helper Functions
@@ -66,32 +74,106 @@ def calculate_nearest_market_distance(farmgate_df, markets_geojson):
     if farmgate_df.empty or not markets_geojson or not markets_geojson.get('features'):
         return farmgate_df
     
-    # Initialize the distance column
     farmgate_df['Distance_to_Nearest_Market_km'] = np.nan
-    
-    # Extract market coordinates
     market_coords = []
     for feature in markets_geojson['features']:
         if feature['geometry']['type'] == 'Point':
             coords = feature['geometry']['coordinates']
             if len(coords) == 2 and all(isinstance(c, (int, float)) for c in coords):
-                # GeoJSON is [lon, lat], convert to [lat, lon] for geopy
                 market_coords.append((coords[1], coords[0]))
     
     if not market_coords:
         st.warning("No valid market coordinates found for distance calculation.")
         return farmgate_df
     
-    # Calculate distance for each farmgate
     for idx, row in farmgate_df.iterrows():
         if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
             continue
         farmgate_point = (row['Régions - Latitude'], row['Régions - Longitude'])
-        # Find the minimum distance to any market
         distances = [geodesic(farmgate_point, market).kilometers for market in market_coords]
         farmgate_df.at[idx, 'Distance_to_Nearest_Market_km'] = min(distances)
     
     return farmgate_df
+
+@st.cache_data
+def extract_geospatial_features(farmgate_df, raster_path, bounds):
+    """Extract mean travel time or friction for each farmgate location from raster."""
+    try:
+        with rasterio.open(raster_path) as src:
+            data = src.read(1)
+            transform = src.transform
+            nodata = src.nodata
+            farmgate_df['Raster_Value'] = np.nan
+            for idx, row in farmgate_df.iterrows():
+                if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
+                    continue
+                # Convert lat/lon to pixel coordinates
+                col, row_idx = ~transform * (row['Régions - Longitude'], row['Régions - Latitude'])
+                col, row_idx = int(col), int(row_idx)
+                if 0 <= row_idx < data.shape[0] and 0 <= col < data.shape[1]:
+                    value = data[row_idx, col]
+                    if nodata is None or value != nodata:
+                        farmgate_df.at[idx, 'Raster_Value'] = value
+        return farmgate_df
+    except Exception as e:
+        st.error(f"Failed to extract geospatial features: {e}")
+        return farmgate_df
+
+@st.cache_data
+def train_price_prediction_model(df, features, target='Price'):
+    """Train an XGBoost model to predict prices."""
+    if df.empty:
+        return None, None
+    X = df[features].copy()
+    y = df[target]
+    
+    # Encode categorical variables
+    for col in ['Régions Name', 'commodity_id']:
+        if col in X.columns:
+            le = LabelEncoder()
+            X[col] = le.fit_transform(X[col].astype(str))
+    
+    # Handle missing values
+    X = X.fillna(X.mean())
+    
+    model = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=100, random_state=42)
+    model.fit(X, y)
+    return model, X.columns
+
+@st.cache_data
+def detect_anomalies(df, features):
+    """Detect anomalies in price data using Isolation Forest."""
+    if df.empty:
+        return pd.DataFrame()
+    X = df[features].copy()
+    for col in ['Régions Name', 'commodity_id']:
+        if col in X.columns:
+            le = LabelEncoder()
+            X[col] = le.fit_transform(X[col].astype(str))
+    X = X.fillna(X.mean())
+    
+    iso_forest = IsolationForest(contamination=0.1, random_state=42)
+    df['Anomaly'] = iso_forest.fit_predict(X)
+    df['Anomaly'] = df['Anomaly'].apply(lambda x: 'Anomaly' if x == -1 else 'Normal')
+    return df[df['Anomaly'] == 'Anomaly']
+
+@st.cache_data
+def forecast_prices(df, commodity_id, periods=12):
+    """Forecast future prices using Prophet."""
+    if df.empty:
+        return pd.DataFrame()
+    df_prophet = df[df['commodity_id'] == commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
+    df_prophet['ds'] = pd.to_datetime(df_prophet[['Year', 'Month']].assign(day=1))
+    df_prophet = df_prophet.rename(columns={'Price': 'y'})
+    
+    if len(df_prophet) < 2:
+        return pd.DataFrame()
+    
+    model = Prophet(yearly_seasonality=True, weekly_seasonality=False, daily_seasonality=False)
+    model.fit(df_prophet[['ds', 'y']])
+    future = model.make_future_dataframe(periods=periods, freq='ME')
+    forecast = model.predict(future)
+    return forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
 
 # -------------------------------
 # Load and Process Rasters
@@ -269,7 +351,7 @@ def main():
     # Introduction
     st.markdown("""
     ### Welcome to the Senegal Agricultural Market Dashboard
-    This interactive tool visualizes travel time, friction surfaces, market locations, road networks, and commodity prices across Senegal. 
+    This interactive tool visualizes travel time, friction surfaces, market locations, road networks, commodity prices, and machine learning insights across Senegal. 
     Use the filters to explore data and download insights for research and policy-making.
     """)
 
@@ -326,12 +408,29 @@ def main():
         st.error(f"Missing required columns in retail prices: {', '.join([col for col in retail_required_columns if col not in retail_df.columns])}")
         retail_df = pd.DataFrame()
 
+    # Extract geospatial features for ML
+    if not prices_df.empty:
+        prices_df = calculate_nearest_market_distance(prices_df, markets)
+        prices_df = extract_geospatial_features(prices_df, st.session_state.file_paths['raster'], travel_bounds)
+        prices_df = prices_df.rename(columns={'Raster_Value': 'Travel_Time'})
+        prices_df = extract_geospatial_features(prices_df, st.session_state.file_paths['friction'], friction_bounds)
+        prices_df = prices_df.rename(columns={'Raster_Value': 'Friction'})
+
+    # Train ML models
+    features = ['Régions Name', 'commodity_id', 'Year', 'Month', 'Distance_to_Nearest_Market_km', 'Travel_Time', 'Friction']
+    farmgate_model, farmgate_features = train_price_prediction_model(prices_df, features)
+    retail_model, retail_features = train_price_prediction_model(retail_df, ['market', 'commodity_id', 'Year', 'Month', 'latitude', 'longitude'])
+
+    # Detect anomalies
+    farmgate_anomalies = detect_anomalies(prices_df, features)
+    retail_anomalies = detect_anomalies(retail_df, ['market', 'commodity_id', 'Year', 'Month', 'latitude', 'longitude'])
+
     # Tabs for different views
-    tab1, tab2, tab3 = st.tabs(["Interactive Map", "Data Summary", "Price Trends"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Interactive Map", "Data Summary", "Price Trends", "ML Insights"])
 
     with tab1:
         st.subheader("Interactive Map")
-        st.markdown("Explore travel time, friction surfaces, market locations, road networks, and commodity prices.")
+        st.markdown("Explore travel time, friction surfaces, market locations, road networks, commodity prices, and ML predictions.")
         st.info("Map view is fixed. Pan or zoom to explore all data. Roads layer may load slowly due to data complexity.")
 
         # Filter controls
@@ -378,6 +477,7 @@ def main():
         show_markets = st.sidebar.checkbox("Markets", value=True)
         show_farmgate = st.sidebar.checkbox("Farmgate Prices", value=False)
         show_retail = st.sidebar.checkbox("Retail Prices", value=False)
+        show_anomalies = st.sidebar.checkbox("Price Anomalies", value=False)
 
         # Map height control
         map_height = st.sidebar.slider("Map Height (px)", 400, 1000, 800, key="map_height")
@@ -395,11 +495,23 @@ def main():
                 latest_farmgate_prices = filtered_farmgate.sort_values('Date').groupby(['Régions Name', 'commodity_id']).last().reset_index()
                 if selected_commodity_ids:
                     latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_id'].isin(selected_commodity_ids)]
-                # Calculate distance to nearest market
                 latest_farmgate_prices = calculate_nearest_market_distance(latest_farmgate_prices, markets)
+                latest_farmgate_prices = extract_geospatial_features(latest_farmgate_prices, st.session_state.file_paths['raster'], travel_bounds)
+                latest_farmgate_prices = latest_farmgate_prices.rename(columns={'Raster_Value': 'Travel_Time'})
+                latest_farmgate_prices = extract_geospatial_features(latest_farmgate_prices, st.session_state.file_paths['friction'], friction_bounds)
+                latest_farmgate_prices = latest_farmgate_prices.rename(columns={'Raster_Value': 'Friction'})
                 if len(latest_farmgate_prices) > 500:
                     latest_farmgate_prices = latest_farmgate_prices.head(500)
                     st.warning("Limited to 500 farmgate price markers for performance.")
+                # Predict prices
+                if farmgate_model is not None and not latest_farmgate_prices.empty:
+                    X_pred = latest_farmgate_prices[farmgate_features].copy()
+                    for col in ['Régions Name', 'commodity_id']:
+                        if col in X_pred.columns:
+                            le = LabelEncoder()
+                            X_pred[col] = le.fit_transform(X_pred[col].astype(str))
+                    X_pred = X_pred.fillna(X_pred.mean())
+                    latest_farmgate_prices['Predicted_Price'] = farmgate_model.predict(X_pred)
             if not retail_df.empty:
                 filtered_retail = retail_df[retail_df['Year'] == selected_year] if selected_year else retail_df
                 if selected_month:
@@ -415,8 +527,19 @@ def main():
                 if len(latest_retail_prices) > 500:
                     latest_retail_prices = latest_retail_prices.head(500)
                     st.warning("Limited to 500 retail price markers for performance.")
+                # Predict prices
+                if retail_model is not None and not latest_retail_prices.empty:
+                    X_pred = latest_retail_prices[retail_features].copy()
+                    for col in ['market', 'commodity_id']:
+                        if col in X_pred.columns:
+                            le = LabelEncoder()
+                            X_pred[col] = le.fit_transform(X_pred[col].astype(str))
+                    X_pred = X_pred.fillna(X_pred.mean())
+                    latest_retail_prices['Predicted_Price'] = retail_model.predict(X_pred)
             st.session_state.latest_farmgate_prices = latest_farmgate_prices
             st.session_state.latest_retail_prices = latest_retail_prices
+            st.session_state.ml_predictions = pd.concat([latest_farmgate_prices, latest_retail_prices], ignore_index=True)
+            st.session_state.anomalies = pd.concat([farmgate_anomalies, retail_anomalies], ignore_index=True)
             st.session_state.map_data_updated = False
             st.session_state.map_render_key += 1
 
@@ -466,9 +589,9 @@ def main():
                         for _, row in st.session_state.latest_farmgate_prices.iterrows():
                             if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
                                 continue
-                            # Include distance in popup if available
                             distance_text = f"<b>Distance to Nearest Market:</b> {row['Distance_to_Nearest_Market_km']:.2f} km<br>" if not pd.isna(row.get('Distance_to_Nearest_Market_km')) else ""
-                            popup_text = f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br>{distance_text}<b>Date:</b> {row['Year']}-{row['Month']:02d}"
+                            predicted_text = f"<b>Predicted Price:</b> {row['Predicted_Price']:.2f} {row['Unit2']}<br>" if not pd.isna(row.get('Predicted_Price')) else ""
+                            popup_text = f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br>{distance_text}{predicted_text}<b>Date:</b> {row['Year']}-{row['Month']:02d}"
                             folium.Marker(
                                 location=[row['Régions - Latitude'], row['Régions - Longitude']],
                                 popup=folium.Popup(popup_text, max_width=250),
@@ -485,7 +608,8 @@ def main():
                         for _, row in st.session_state.latest_retail_prices.iterrows():
                             if pd.isna(row['latitude']) or pd.isna(row['longitude']):
                                 continue
-                            popup_text = f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
+                            predicted_text = f"<b>Predicted Price:</b> {row['Predicted_Price']:.2f} {row['Unit2']}<br>" if not pd.isna(row.get('Predicted_Price')) else ""
+                            popup_text = f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br>{predicted_text}<b>Date:</b> {row['Year']}-{row['Month']:02d}"
                             folium.Marker(
                                 location=[row['latitude'], row['longitude']],
                                 popup=folium.Popup(popup_text, max_width=250),
@@ -494,6 +618,31 @@ def main():
                             valid_retail_markers += 1
                         if valid_retail_markers == 0:
                             st.warning("No valid retail price locations found for the selected filters.")
+
+                    # Add Anomalies Layer
+                    if show_anomalies and not st.session_state.anomalies.empty:
+                        anomaly_cluster = MarkerCluster(name="Price Anomalies").add_to(m)
+                        valid_anomaly_markers = 0
+                        for _, row in st.session_state.anomalies.iterrows():
+                            if 'Régions - Latitude' in row and not pd.isna(row['Régions - Latitude']) and not pd.isna(row['Régions - Longitude']):
+                                distance_text = f"<b>Distance to Nearest Market:</b> {row['Distance_to_Nearest_Market_km']:.2f} km<br>" if not pd.isna(row.get('Distance_to_Nearest_Market_km')) else ""
+                                popup_text = f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br>{distance_text}<b>Date:</b> {row['Year']}-{row['Month']:02d}<br><b>Status:</b> Anomaly"
+                                folium.Marker(
+                                    location=[row['Régions - Latitude'], row['Régions - Longitude']],
+                                    popup=folium.Popup(popup_text, max_width=250),
+                                    icon=folium.Icon(color='red', icon='exclamation-triangle', prefix='fa')
+                                ).add_to(anomaly_cluster)
+                                valid_anomaly_markers += 1
+                            elif 'latitude' in row and not pd.isna(row['latitude']) and not pd.isna(row['longitude']):
+                                popup_text = f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}<br><b>Status:</b> Anomaly"
+                                folium.Marker(
+                                    location=[row['latitude'], row['longitude']],
+                                    popup=folium.Popup(popup_text, max_width=250),
+                                    icon=folium.Icon(color='red', icon='exclamation-triangle', prefix='fa')
+                                ).add_to(anomaly_cluster)
+                                valid_anomaly_markers += 1
+                        if valid_anomaly_markers == 0:
+                            st.warning("No valid anomaly locations found for the selected filters.")
 
                     # Add Raster Overlays
                     if show_travel:
@@ -522,7 +671,7 @@ def main():
                     folium.LayerControl(collapsed=False).add_to(m)
                     st_folium(m, use_container_width=True, height=map_height, key=f"folium_map_{st.session_state.map_render_key}")
 
-                    # Add Legends Below Map (Travel on Left, Friction on Right)
+                    # Add Legends Below Map
                     if show_travel or show_friction:
                         col1, col2 = st.columns(2)
                         if show_travel:
@@ -601,6 +750,21 @@ def main():
             col4.metric("Avg Distance to Market (km)", f"{avg_distance:.2f}" if not pd.isna(avg_distance) else "N/A")
         else:
             col4.metric("Avg Distance to Market (km)", "N/A")
+        
+        # Regional Accessibility Metrics
+        if not prices_df.empty:
+            st.markdown("### Regional Accessibility Metrics")
+            regional_metrics = prices_df.groupby('Régions Name').agg({
+                'Travel_Time': 'mean',
+                'Friction': 'mean',
+                'Price': 'mean'
+            }).reset_index()
+            regional_metrics = regional_metrics.rename(columns={
+                'Travel_Time': 'Avg Travel Time (min)',
+                'Friction': 'Avg Friction (min/m)',
+                'Price': 'Avg Farmgate Price'
+            })
+            st.dataframe(regional_metrics)
 
     with tab3:
         st.subheader("Price Trends")
@@ -613,6 +777,7 @@ def main():
                 key="trend_commodity_select"
             )
             show_gross_margin = st.checkbox("Show Gross Margin (Retail - Farmgate)", value=True, key="show_gross_margin")
+            show_forecast = st.checkbox("Show Price Forecast", value=False, key="show_forecast")
             try:
                 # Calculate farmgate trend
                 farmgate_trend = prices_df[prices_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
@@ -647,12 +812,22 @@ def main():
                 else:
                     margin_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
 
-                # Combine trends
-                if not farmgate_trend.empty or not retail_trend.empty or not margin_trend.empty:
-                    combined_trend = pd.concat([farmgate_trend, retail_trend, margin_trend], ignore_index=True)
-                else:
-                    combined_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
+                # Forecast prices
+                forecast_trend = pd.DataFrame()
+                if show_forecast:
+                    farmgate_forecast = forecast_prices(prices_df, selected_commodity_id)
+                    if not farmgate_forecast.empty:
+                        farmgate_forecast['Price Type'] = 'Farmgate Forecast'
+                        farmgate_forecast = farmgate_forecast.rename(columns={'ds': 'Date', 'yhat': 'Price'})
+                        forecast_trend = pd.concat([forecast_trend, farmgate_forecast[['Date', 'Price', 'Price Type', 'yhat_lower', 'yhat_upper']]], ignore_index=True)
+                    retail_forecast = forecast_prices(retail_df, selected_commodity_id)
+                    if not retail_forecast.empty:
+                        retail_forecast['Price Type'] = 'Retail Forecast'
+                        retail_forecast = retail_forecast.rename(columns={'ds': 'Date', 'yhat': 'Price'})
+                        forecast_trend = pd.concat([forecast_trend, retail_forecast[['Date', 'Price', 'Price Type', 'yhat_lower', 'yhat_upper']]], ignore_index=True)
 
+                # Combine trends
+                combined_trend = pd.concat([farmgate_trend, retail_trend, margin_trend, forecast_trend], ignore_index=True)
                 if combined_trend.empty:
                     st.warning(f"No trend data available for {commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)}.")
                 else:
@@ -687,6 +862,58 @@ def main():
                             marker=dict(size=6),
                             hovertemplate='%{x|%b %Y}<br>Margin: %{y:.2f}<br>Type: Gross Margin'
                         ))
+                    if show_forecast and 'Farmgate Forecast' in combined_trend['Price Type'].values:
+                        forecast_data = combined_trend[combined_trend['Price Type'] == 'Farmgate Forecast']
+                        fig.add_trace(go.Scatter(
+                            x=forecast_data['Date'],
+                            y=forecast_data['Price'],
+                            mode='lines',
+                            name='Farmgate Forecast',
+                            line=dict(color='#2ca02c', width=2, dash='dot'),
+                            hovertemplate='%{x|%b %Y}<br>Price: %{y:.2f}<br>Type: Farmgate Forecast'
+                        ))
+                        fig.add_trace(go.Scatter(
+                            x=forecast_data['Date'],
+                            y=forecast_data['yhat_upper'],
+                            mode='lines',
+                            line=dict(width=0),
+                            showlegend=False
+                        ))
+                        fig.add_trace(go.Scatter(
+                            x=forecast_data['Date'],
+                            y=forecast_data['yhat_lower'],
+                            mode='lines',
+                            line=dict(width=0),
+                            fill='tonexty',
+                            fillcolor='rgba(44, 160, 44, 0.2)',
+                            showlegend=False
+                        ))
+                    if show_forecast and 'Retail Forecast' in combined_trend['Price Type'].values:
+                        forecast_data = combined_trend[combined_trend['Price Type'] == 'Retail Forecast']
+                        fig.add_trace(go.Scatter(
+                            x=forecast_data['Date'],
+                            y=forecast_data['Price'],
+                            mode='lines',
+                            name='Retail Forecast',
+                            line=dict(color='#9467bd', width=2, dash='dot'),
+                            hovertemplate='%{x|%b %Y}<br>Price: %{y:.2f}<br>Type: Retail Forecast'
+                        ))
+                        fig.add_trace(go.Scatter(
+                            x=forecast_data['Date'],
+                            y=forecast_data['yhat_upper'],
+                            mode='lines',
+                            line=dict(width=0),
+                            showlegend=False
+                        ))
+                        fig.add_trace(go.Scatter(
+                            x=forecast_data['Date'],
+                            y=forecast_data['yhat_lower'],
+                            mode='lines',
+                            line=dict(width=0),
+                            fill='tonexty',
+                            fillcolor='rgba(148, 103, 189, 0.2)',
+                            showlegend=False
+                        ))
 
                     fig.update_layout(
                         title=f"{commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)} Price and Margin Trends",
@@ -704,6 +931,36 @@ def main():
                 st.error(f"Failed to generate price trends: {e}")
         else:
             st.warning("No data available for price trends. Please check your data.")
+
+    with tab4:
+        st.subheader("Machine Learning Insights")
+        st.markdown("### Price Predictions and Anomalies")
+        if not st.session_state.ml_predictions.empty:
+            st.markdown("#### Predicted Prices")
+            st.dataframe(st.session_state.ml_predictions[[
+                'Régions Name', 'market', 'commodity_id', 'Price', 'Predicted_Price', 'Year', 'Month',
+                'Distance_to_Nearest_Market_km', 'Travel_Time', 'Friction'
+            ]].dropna(subset=['Price', 'Predicted_Price'], how='all'))
+        
+        if not st.session_state.anomalies.empty:
+            st.markdown("#### Detected Anomalies")
+            st.dataframe(st.session_state.anomalies[[
+                'Régions Name', 'market', 'commodity_id', 'Price', 'Year', 'Month',
+                'Distance_to_Nearest_Market_km', 'Travel_Time', 'Friction', 'Anomaly'
+            ]])
+        
+        st.markdown("### Regional Cost Disparities")
+        if not prices_df.empty:
+            fig = px.scatter(
+                prices_df,
+                x='Distance_to_Nearest_Market_km',
+                y='Price',
+                color='Régions Name',
+                size='Travel_Time',
+                hover_data=['commodity_english', 'Year', 'Month'],
+                title="Price vs. Distance to Nearest Market by Region"
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
     # Footer
     st.markdown("""
