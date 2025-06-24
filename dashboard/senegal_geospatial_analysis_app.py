@@ -12,6 +12,19 @@ import plotly.express as px
 import plotly.graph_objects as go
 import uuid
 import atexit
+from math import radians, sin, cos, sqrt, atan2
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+import joblib
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # -------------------------------
 # Configuration: File Paths
@@ -36,6 +49,8 @@ if 'file_paths' not in st.session_state:
     st.session_state.file_paths = DEFAULT_FILES.copy()
 if 'map_render_key' not in st.session_state:
     st.session_state.map_render_key = 0
+if 'margin_model' not in st.session_state:
+    st.session_state.margin_model = None
 
 # -------------------------------
 # Helper Functions
@@ -47,7 +62,6 @@ def validate_file(file_path, file_type):
     return True
 
 def generate_colors(data, breaks, colors):
-    """Convert raster data to RGB image based on specified colors."""
     rgb = np.zeros((data.shape[0], data.shape[1], 3), dtype=np.uint8)
     for i in range(len(breaks) - 1):
         mask = (data >= breaks[i]) & (data < breaks[i + 1])
@@ -55,15 +69,79 @@ def generate_colors(data, breaks, colors):
     return rgb
 
 def cleanup_temp_files(*files):
-    """Clean up temporary files."""
     for file in files:
         if os.path.exists(file):
             os.remove(file)
 
+def haversine(lon1, lat1, lon2, lat2):
+    R = 6371.0  # Earth's radius in kilometers
+    lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    return R * c
+
+def generate_margin_data(df):
+    df['distance_to_market_km'] = df.apply(
+        lambda row: haversine(
+            row['Régions - Longitude'], 
+            row['Régions - Latitude'], 
+            row['longitude'], 
+            row['latitude']
+        ), axis=1
+    )
+    df['gross_margin'] = df['price_retail'] - df['price_farmgate']
+    df['transaction_cost'] = 0.05 * df['distance_to_market_km']
+    df['net_margin'] = df['gross_margin'] - df['transaction_cost']
+    return df
+
+@st.cache_data
+def train_margin_model(df):
+    features = ['price_farmgate', 'price_retail', 'distance_to_market_km', 'friction', 'travel_time', 'commodity_id']
+    target = 'net_margin'
+    categorical_features = ['commodity_id']
+    numerical_features = ['price_farmgate', 'price_retail', 'distance_to_market_km', 'friction', 'travel_time']
+    
+    df = df.dropna(subset=features + [target])
+    if df.empty:
+        logger.warning("No valid data for model training after dropping missing values.")
+        return None, None
+    
+    X = df[features]
+    y = df[target]
+    
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    logger.info(f"Training set size: {len(X_train)}, Test set size: {len(X_test)}")
+    
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', 'passthrough', numerical_features),
+            ('cat', OneHotEncoder(sparse_output=False, handle_unknown='ignore'), categorical_features)
+        ])
+    
+    model = Pipeline([
+        ('preprocessor', preprocessor),
+        ('regressor', GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42))
+    ])
+    
+    try:
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        mse = mean_squared_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+        
+        model_path = os.path.join(BASE_DIR, 'net_margin_model.pkl')
+        joblib.dump(model, model_path)
+        return model, r2
+    except Exception as e:
+        logger.error(f"Model training failed: {e}")
+        return None, None
+
 # -------------------------------
 # Load and Process Rasters
-# -------------------------------
-@st.cache_data(hash_funcs={np.ma.MaskedArray: lambda x: hash((x.data.tobytes(), x.mask.tobytes()))})
+# -----------------------
+@st.cache_data(hash_funcs={'numpy.ma.core.MaskedArray': lambda x: hash((x.data.tobytes(), x.mask.tobytes()))})
 def load_and_process_raster(file_path, downsample_factor=2):
     try:
         with rasterio.open(file_path) as src:
@@ -77,8 +155,8 @@ def load_and_process_raster(file_path, downsample_factor=2):
 
 # -------------------------------
 # Generate Raster Images
-# -------------------------------
-@st.cache_data(hash_funcs={np.ma.MaskedArray: lambda x: hash((x.data.tobytes(), x.mask.tobytes()))})
+# -----------------------
+@st.cache_data(hash_funcs={'numpy.ma.core.MaskedArray': lambda x: hash((x.data.tobytes(), x.mask.tobytes()))})
 def generate_travel_image(data, bounds):
     breaks = [0, 10, 30, 60, 120, 240, 1440, np.inf]
     colors = [(255, 255, 204), (255, 237, 160), (254, 178, 76), (253, 141, 60), (240, 59, 32), (189, 0, 38), (128, 0, 38)]
@@ -88,10 +166,10 @@ def generate_travel_image(data, bounds):
     atexit.register(cleanup_temp_files, travel_png_path)
     return travel_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
 
-@st.cache_data(hash_funcs={np.ma.MaskedArray: lambda x: hash((x.data.tobytes(), x.mask.tobytes()))})
+@st.cache_data(hash_funcs={'numpy.ma.core.MaskedArray': lambda x: hash((x.data.tobytes(), x.mask.tobytes()))})
 def generate_friction_image(data, bounds):
     friction_breaks = [0, 0.001, 0.01, 0.1, 0.5, 1.0, 2.0, np.inf]
-    friction_colors = [(0, 104, 55), (49, 163, 84), (120, 198, 121), (194, 230, 153), (253, 174, 97), (244, 109, 67), (165, 0, 38), (128, 0, 38)]
+    friction_colors = [(0, 104, 55), (49, 163, 84), (120, 198, 121), (194, 230, 153), (253, 174, 97), (244, 109, 67), (165, 0, 38)]
     rgb = generate_colors(data, friction_breaks, friction_colors)
     friction_png_path = f'friction_surface_{str(uuid.uuid4())}.png'
     Image.fromarray(rgb).save(friction_png_path)
@@ -100,7 +178,7 @@ def generate_friction_image(data, bounds):
 
 # -------------------------------
 # Load GeoJSON Files
-# -------------------------------
+# -----------------------
 @st.cache_data
 def load_geojson(file_path, max_features=500, is_roads=False):
     try:
@@ -153,9 +231,9 @@ def load_geojson(file_path, max_features=500, is_roads=False):
         st.warning(f"Failed to load {file_path}: {e}")
         return None
 
-# -------------------------------
+# -----------------------
 # Load Price Data
-# -------------------------------
+# -----------------------
 @st.cache_data
 def load_price_data(file_path):
     try:
@@ -170,6 +248,7 @@ def load_price_data(file_path):
         if not prices_df.empty and (prices_df['Year'] < 2016).any() or (prices_df['Year'] > 2025).any():
             st.warning("Farmgate data contains years outside 2016–2025. Invalid years will be filtered.")
             prices_df = prices_df[prices_df['Year'].between(2016, 2025)]
+        prices_df = prices_df.rename(columns={'Price': 'price_farmgate'})
         return prices_df
     except Exception as e:
         st.error(f"Error reading farmgate prices file {file_path}: {e}")
@@ -190,16 +269,16 @@ def load_retail_data(file_path):
         if not retail_df.empty and (retail_df['Year'] < 2016).any() or (retail_df['Year'] > 2025).any():
             st.warning("Retail data contains years outside 2016–2025. Invalid years will be filtered.")
             retail_df = retail_df[retail_df['Year'].between(2016, 2025)]
+        retail_df = retail_df.rename(columns={'Price': 'price_retail'})
         return retail_df
     except Exception as e:
         st.error(f"Error reading retail prices file {file_path}: {e}")
         return pd.DataFrame()
 
-# -------------------------------
+# -----------------------
 # Main Dashboard
-# -------------------------------
+# -----------------------
 def main():
-    # Custom CSS for styling
     st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
@@ -224,7 +303,6 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    # Header with IFPRI branding
     st.markdown("""
     <div class="header">
         <img src="https://www.ifpri.org/themes/custom/ifpri/logo.svg" alt="IFPRI Logo" width="150">
@@ -233,14 +311,11 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
-    # Introduction
     st.markdown("""
     ### Welcome to the Senegal Agricultural Market Dashboard
-    This interactive tool visualizes travel time, friction surfaces, market locations, road networks, and commodity prices across Senegal. 
-    Use the filters to explore data and download insights for research and policy-making.
+    This interactive tool visualizes travel time, friction surfaces, market locations, road networks, commodity prices, and margin predictions across Senegal.
     """)
 
-    # File Upload Section
     st.sidebar.header("Data Sources")
     uploaded_files = {}
     for key, default_path in DEFAULT_FILES.items():
@@ -255,12 +330,10 @@ def main():
 
     st.session_state.file_paths.update(uploaded_files)
 
-    # Validate files
     for key, path in st.session_state.file_paths.items():
         if not validate_file(path, key.capitalize()):
             return
 
-    # Load data with progress bar
     with st.spinner("Loading data..."):
         progress = st.progress(0)
         travel_time, travel_bounds = load_and_process_raster(st.session_state.file_paths['raster'])
@@ -279,13 +352,11 @@ def main():
         st.error("Failed to load raster data. Please check the files and try again.")
         return
 
-    # Generate raster images
     travel_png_path, travel_image_bounds = generate_travel_image(travel_time, travel_bounds)
     friction_png_path, friction_image_bounds = generate_friction_image(friction_data, friction_bounds)
 
-    # Validate price data columns
-    farmgate_required_columns = ['Régions Name', 'Commodity', 'commodity_english', 'commodity_id', 'Price', 'Unit2', 'Régions - Latitude', 'Régions - Longitude', 'Year', 'Month']
-    retail_required_columns = ['market', 'commodity', 'commodity_id', 'Price', 'Unit2', 'latitude', 'longitude', 'Year', 'Month']
+    farmgate_required_columns = ['Régions Name', 'Commodity', 'commodity_english', 'commodity_id', 'price_farmgate', 'Unit2', 'Régions - Latitude', 'Régions - Longitude', 'Year', 'Month']
+    retail_required_columns = ['market', 'commodity', 'commodity_id', 'price_retail', 'Unit2', 'latitude', 'longitude', 'Year', 'Month']
     if not prices_df.empty and any(col not in prices_df.columns for col in farmgate_required_columns):
         st.error(f"Missing required columns in farmgate prices: {', '.join([col for col in farmgate_required_columns if col not in prices_df.columns])}")
         prices_df = pd.DataFrame()
@@ -293,7 +364,39 @@ def main():
         st.error(f"Missing required columns in retail prices: {', '.join([col for col in retail_required_columns if col not in retail_df.columns])}")
         retail_df = pd.DataFrame()
 
-    # Tabs for different views
+    # Merge farmgate and retail data for margin calculations
+    if not prices_df.empty and not retail_df.empty:
+        merged_df = pd.merge(
+            prices_df[['Régions Name', 'commodity_id', 'price_farmgate', 'Régions - Latitude', 'Régions - Longitude', 'Year', 'Month']],
+            retail_df[['market', 'commodity_id', 'price_retail', 'latitude', 'longitude', 'Year', 'Month']],
+            on=['commodity_id', 'Year', 'Month'],
+            how='inner'
+        )
+        merged_df = generate_margin_data(merged_df)
+        
+        # Extract raster values
+        with rasterio.open(st.session_state.file_paths['friction']) as friction_raster:
+            with rasterio.open(st.session_state.file_paths['raster']) as travel_raster:
+                coords = [(x, y) for x, y in zip(merged_df['longitude'], merged_df['latitude'])]
+                merged_df['friction'] = [val[0] for val in friction_raster.sample(coords)]
+                merged_df['travel_time'] = [val[0] for val in travel_raster.sample(coords)]
+        
+        friction_nodata = friction_raster.nodata if friction_raster.nodata is not None else np.nan
+        travel_nodata = travel_raster.nodata if travel_raster.nodata is not None else np.nan
+        merged_df['friction'] = np.where(np.isclose(merged_df['friction'], friction_nodata, equal_nan=True), merged_df['friction'].mean(), merged_df['friction'])
+        merged_df['travel_time'] = np.where(np.isclose(merged_df['travel_time'], travel_nodata, equal_nan=True), merged_df['travel_time'].mean(), merged_df['travel_time'])
+        merged_df['friction'] = merged_df['friction'].fillna(merged_df['friction'].mean())
+        merged_df['travel_time'] = merged_df['travel_time'].fillna(merged_df['travel_time'].mean())
+        merged_df['distance_to_market_km'] = merged_df['distance_to_market_km'].fillna(merged_df['distance_to_market_km'].mean())
+    else:
+        merged_df = pd.DataFrame()
+
+    # Train margin model if not already trained
+    if st.session_state.margin_model is None and not merged_df.empty:
+        model, r2_score = train_margin_model(merged_df)
+        st.session_state.margin_model = model
+        st.session_state.margin_r2 = r2_score
+
     tab1, tab2, tab3 = st.tabs(["Interactive Map", "Data Summary", "Price Trends"])
 
     with tab1:
@@ -301,7 +404,6 @@ def main():
         st.markdown("Explore travel time, friction surfaces, market locations, road networks, and commodity prices.")
         st.info("Map view is fixed. Pan or zoom to explore all data. Roads layer may load slowly due to data complexity.")
 
-        # Filter controls
         st.sidebar.header("Map Filters")
         available_years = list(range(2016, 2026))
         selected_year = st.sidebar.selectbox("Select Year", available_years, index=len(available_years)-1, key="year_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
@@ -313,7 +415,6 @@ def main():
         selected_month_name = st.sidebar.selectbox("Select Month", [month_names.get(m, str(m)) for m in available_months], index=available_months.index(latest_month) if latest_month in available_months else 0, key="month_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
         selected_month = next((k for k, v in month_names.items() if v == selected_month_name), selected_month_name)
 
-        # Filter commodities
         commodity_options = []
         commodity_id_to_name = {}
         if not prices_df.empty and not retail_df.empty:
@@ -337,7 +438,6 @@ def main():
             on_change=lambda: st.session_state.update({'map_data_updated': True})
         )
 
-        # Layer toggles
         st.sidebar.header("Map Layers")
         show_travel = st.sidebar.checkbox("Travel Time", value=False)
         show_friction = st.sidebar.checkbox("Friction Surface", value=False)
@@ -346,10 +446,8 @@ def main():
         show_farmgate = st.sidebar.checkbox("Farmgate Prices", value=False)
         show_retail = st.sidebar.checkbox("Retail Prices", value=False)
 
-        # Map height control
         map_height = st.sidebar.slider("Map Height (px)", 400, 1000, 800, key="map_height")
 
-        # Update map data
         if st.session_state.map_data_updated or st.session_state.latest_farmgate_prices.empty or st.session_state.latest_retail_prices.empty:
             latest_farmgate_prices = pd.DataFrame()
             latest_retail_prices = pd.DataFrame()
@@ -364,7 +462,7 @@ def main():
                     latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_id'].isin(selected_commodity_ids)]
                 if len(latest_farmgate_prices) > 500:
                     latest_farmgate_prices = latest_farmgate_prices.head(500)
-                    st.warning("Limited to 500 farmgate price markers for — System: performance.")
+                    st.warning("Limited to 500 farmgate price markers for performance.")
             if not retail_df.empty:
                 filtered_retail = retail_df[retail_df['Year'] == selected_year] if selected_year else retail_df
                 if selected_month:
@@ -385,7 +483,6 @@ def main():
             st.session_state.map_data_updated = False
             st.session_state.map_render_key += 1
 
-        # Render Map
         map_placeholder = st.empty()
         with map_placeholder.container():
             with st.spinner("Rendering map..."):
@@ -397,7 +494,6 @@ def main():
                     )
                     folium.FitBounds([[12.3, -17], [16.7, -11]]).add_to(m)
 
-                    # Add Roads Layer
                     if show_roads and roads_filtered:
                         folium.GeoJson(
                             roads_filtered,
@@ -405,7 +501,6 @@ def main():
                             style_function=lambda x: {'color': '#3b82f6', 'weight': 1, 'opacity': 0.7}
                         ).add_to(m)
 
-                    # Add Markets Layer
                     if show_markets and markets:
                         market_group = folium.FeatureGroup(name="Markets", show=True)
                         valid_markets = 0
@@ -424,14 +519,13 @@ def main():
                         else:
                             market_group.add_to(m)
 
-                    # Add Farmgate Prices Layer
                     if show_farmgate and not st.session_state.latest_farmgate_prices.empty:
                         farmgate_cluster = MarkerCluster(name="Farmgate Prices").add_to(m)
                         valid_farmgate_markers = 0
                         for _, row in st.session_state.latest_farmgate_prices.iterrows():
                             if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
                                 continue
-                            popup_text = f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
+                            popup_text = f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['price_farmgate']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
                             folium.Marker(
                                 location=[row['Régions - Latitude'], row['Régions - Longitude']],
                                 popup=folium.Popup(popup_text, max_width=250),
@@ -441,14 +535,13 @@ def main():
                         if valid_farmgate_markers == 0:
                             st.warning("No valid farmgate price locations found for the selected filters.")
 
-                    # Add Retail Prices Layer
                     if show_retail and not st.session_state.latest_retail_prices.empty:
                         retail_cluster = MarkerCluster(name="Retail Prices").add_to(m)
                         valid_retail_markers = 0
                         for _, row in st.session_state.latest_retail_prices.iterrows():
                             if pd.isna(row['latitude']) or pd.isna(row['longitude']):
                                 continue
-                            popup_text = f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
+                            popup_text = f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity']}<br><b>Price:</b> {row['price_retail']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
                             folium.Marker(
                                 location=[row['latitude'], row['longitude']],
                                 popup=folium.Popup(popup_text, max_width=250),
@@ -458,7 +551,6 @@ def main():
                         if valid_retail_markers == 0:
                             st.warning("No valid retail price locations found for the selected filters.")
 
-                    # Add Raster Overlays
                     if show_travel:
                         folium.raster_layers.ImageOverlay(
                             name="Travel Time",
@@ -478,14 +570,12 @@ def main():
                             cross_origin=False
                         ).add_to(m)
 
-                    # Add MiniMap and Fullscreen
                     MiniMap(tiles='OpenStreetMap', position='bottomleft', width=150, height=150).add_to(m)
                     Fullscreen(position='topright', title='Expand', title_cancel='Exit').add_to(m)
 
                     folium.LayerControl(collapsed=False).add_to(m)
                     st_folium(m, use_container_width=True, height=map_height, key=f"folium_map_{st.session_state.map_render_key}")
 
-                    # Add Legends Below Map (Travel on Left, Friction on Right)
                     if show_travel or show_friction:
                         col1, col2 = st.columns(2)
                         if show_travel:
@@ -534,7 +624,7 @@ def main():
                                         <span class="legend-color" style="background:#c2e699;"></span> ≤ 0.5
                                     </div>
                                     <div class="legend-item">
-                                        <span class="legend-color" style="background:#fdae61;"></span> ≤ 1.0
+                                        <span class="legend-color" style="background:#fdae61;"></span> ≤ 1
                                     </div>
                                     <div class="legend-item">
                                         <span class="legend-color" style="background:#f46d43;"></span> ≤ 2.0
@@ -563,7 +653,7 @@ def main():
     with tab3:
         st.subheader("Price Trends")
         if not prices_df.empty and not retail_df.empty and commodity_options:
-            st.markdown("### Farmgate, Retail, and Gross Margin Trends")
+            st.markdown("### Farmgate, Retail, Gross Margin, and Net Margin Trends")
             selected_commodity_id = st.selectbox(
                 "Select Commodity",
                 options=commodity_options,
@@ -571,46 +661,61 @@ def main():
                 key="trend_commodity_select"
             )
             show_gross_margin = st.checkbox("Show Gross Margin (Retail - Farmgate)", value=True, key="show_gross_margin")
+            show_net_margin = st.checkbox("Show Net Margin (Gross Margin - Transaction Cost)", value=True, key="show_net_margin")
+
+            @st.cache_data
+            def compute_national_trends(_prices_df, _retail_df, _merged_df, commodity_id, show_gross, show_net):
+                try:
+                    farmgate_trend = _prices_df[_prices_df['commodity_id'] == commodity_id][['Year', 'Month', 'price_farmgate']].groupby(['Year', 'Month']).mean().reset_index()
+                    if not farmgate_trend.empty:
+                        farmgate_trend['Date'] = pd.to_datetime(farmgate_trend[['Year', 'Month']].assign(day=1), errors='coerce')
+                        farmgate_trend = farmgate_trend.dropna(subset=['Date']).reset_index(drop=True)
+                        farmgate_trend['Price Type'] = 'Farmgate'
+                    else:
+                        farmgate_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
+
+                    retail_trend = _retail_df[_retail_df['commodity_id'] == commodity_id][['Year', 'Month', 'price_retail']].groupby(['Year', 'Month']).mean().reset_index()
+                    if not retail_trend.empty:
+                        retail_trend['Date'] = pd.to_datetime(retail_trend[['Year', 'Month']].assign(day=1), errors='coerce')
+                        retail_trend = retail_trend.dropna(subset=['Date']).reset_index(drop=True)
+                        retail_trend['Price Type'] = 'Retail'
+                    else:
+                        retail_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
+
+                    gross_margin_trend = pd.DataFrame()
+                    net_margin_trend = pd.DataFrame()
+                    if show_gross and not farmgate_trend.empty and not retail_trend.empty:
+                        margin_trend = pd.merge(
+                            farmgate_trend[['Year', 'Month', 'price_farmgate', 'Date']],
+                            retail_trend[['Year', 'Month', 'price_retail', 'Date']],
+                            on=['Year', 'Month', 'Date'],
+                            how='inner',
+                            suffixes=('_farmgate', '_retail')
+                        )
+                        margin_trend['Price'] = margin_trend['price_retail'] - margin_trend['price_farmgate']
+                        margin_trend['Price Type'] = 'Gross Margin'
+                        gross_margin_trend = margin_trend[['Date', 'Price', 'Price Type']].dropna(subset=['Price'])
+
+                    if show_net and not _merged_df.empty:
+                        net_trend = _merged_df[_merged_df['commodity_id'] == commodity_id][['Year', 'Month', 'net_margin']].groupby(['Year', 'Month']).mean().reset_index()
+                        if not net_trend.empty:
+                            net_trend['Date'] = pd.to_datetime(net_trend[['Year', 'Month']].assign(day=1), errors='coerce')
+                            net_trend = net_trend.dropna(subset=['Date']).reset_index(drop=True)
+                            net_trend['Price'] = net_trend['net_margin']
+                            net_trend['Price Type'] = 'Net Margin'
+                            net_margin_trend = net_trend[['Date', 'Price', 'Price Type']]
+
+                    combined_trend = pd.concat([farmgate_trend.rename(columns={'price_farmgate': 'Price'}),
+                                              retail_trend.rename(columns={'price_retail': 'Price'}),
+                                              gross_margin_trend,
+                                              net_margin_trend], ignore_index=True)
+                    return combined_trend
+                except Exception as e:
+                    st.error(f"Failed to compute national price trends: {e}")
+                    return pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
+
             try:
-                # Calculate farmgate trend
-                farmgate_trend = prices_df[prices_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
-                if not farmgate_trend.empty:
-                    farmgate_trend['Date'] = pd.to_datetime(farmgate_trend[['Year', 'Month']].assign(day=1), errors='coerce')
-                    farmgate_trend = farmgate_trend.dropna(subset=['Date']).reset_index(drop=True)
-                    farmgate_trend['Price Type'] = 'Farmgate'
-                else:
-                    farmgate_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
-
-                # Calculate retail trend
-                retail_trend = retail_df[retail_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
-                if not retail_trend.empty:
-                    retail_trend['Date'] = pd.to_datetime(retail_trend[['Year', 'Month']].assign(day=1), errors='coerce')
-                    retail_trend = retail_trend.dropna(subset=['Date']).reset_index(drop=True)
-                    retail_trend['Price Type'] = 'Retail'
-                else:
-                    retail_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
-
-                # Calculate gross margin
-                if show_gross_margin and not farmgate_trend.empty and not retail_trend.empty:
-                    margin_trend = pd.merge(
-                        farmgate_trend[['Year', 'Month', 'Price', 'Date']],
-                        retail_trend[['Year', 'Month', 'Price', 'Date']],
-                        on=['Year', 'Month', 'Date'],
-                        how='inner',
-                        suffixes=('_farmgate', '_retail')
-                    )
-                    margin_trend['Price'] = margin_trend['Price_retail'] - margin_trend['Price_farmgate']
-                    margin_trend['Price Type'] = 'Gross Margin'
-                    margin_trend = margin_trend[['Date', 'Price', 'Price Type']].dropna(subset=['Price'])
-                else:
-                    margin_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
-
-                # Combine trends
-                if not farmgate_trend.empty or not retail_trend.empty or not margin_trend.empty:
-                    combined_trend = pd.concat([farmgate_trend, retail_trend, margin_trend], ignore_index=True)
-                else:
-                    combined_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
-
+                combined_trend = compute_national_trends(prices_df, retail_df, merged_df, selected_commodity_id, show_gross_margin, show_net_margin)
                 if combined_trend.empty:
                     st.warning(f"No trend data available for {commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)}.")
                 else:
@@ -645,6 +750,16 @@ def main():
                             marker=dict(size=6),
                             hovertemplate='%{x|%b %Y}<br>Margin: %{y:.2f}<br>Type: Gross Margin'
                         ))
+                    if show_net_margin and 'Net Margin' in combined_trend['Price Type'].values:
+                        fig.add_trace(go.Scatter(
+                            x=combined_trend[combined_trend['Price Type'] == 'Net Margin']['Date'],
+                            y=combined_trend[combined_trend['Price Type'] == 'Net Margin']['Price'],
+                            mode='lines+markers',
+                            name='Net Margin',
+                            line=dict(color='#ff7f0e', width=2, dash='dot'),
+                            marker=dict(size=6),
+                            hovertemplate='%{x|%b %Y}<br>Margin: %{y:.2f}<br>Type: Net Margin'
+                        ))
 
                     fig.update_layout(
                         title=f"{commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)} Price and Margin Trends",
@@ -659,14 +774,171 @@ def main():
                     )
                     st.plotly_chart(fig, use_container_width=True)
             except Exception as e:
-                st.error(f"Failed to generate price trends: {e}")
+                st.error(f"Failed to generate national price trends: {e}")
+
+            st.markdown("### Regional Farmgate, Retail, Gross Margin, and Net Margin Trends")
+            @st.cache_data
+            def compute_regional_trends(_prices_df, _retail_df, _merged_df, commodity_id, show_gross, show_net):
+                try:
+                    required_farmgate_cols = ['Régions Name', 'Year', 'Month', 'price_farmgate', 'commodity_id']
+                    required_retail_cols = ['market', 'Year', 'Month', 'price_retail', 'commodity_id']
+                    if not all(col in _prices_df.columns for col in required_farmgate_cols):
+                        st.warning(f"Missing farmgate columns: {', '.join([col for col in required_farmgate_cols if col not in _prices_df.columns])}")
+                        return pd.DataFrame(columns=['Region', 'Date', 'Price', 'Price Type'])
+                    if not all(col in _retail_df.columns for col in required_retail_cols):
+                        st.warning(f"Missing retail columns: {', '.join([col for col in required_retail_cols if col not in _retail_df.columns])}")
+                        return pd.DataFrame(columns=['Region', 'Date', 'Price', 'Price Type'])
+
+                    farmgate_regional_trend = _prices_df[_prices_df['commodity_id'] == commodity_id][['Régions Name', 'Year', 'Month', 'price_farmgate']].groupby(['Régions Name', 'Year', 'Month']).mean().reset_index()
+                    if not farmgate_regional_trend.empty:
+                        farmgate_regional_trend['Date'] = pd.to_datetime(farmgate_regional_trend[['Year', 'Month']].assign(day=1), errors='coerce')
+                        farmgate_regional_trend = farmgate_regional_trend.dropna(subset=['Date']).reset_index(drop=True)
+                        farmgate_regional_trend['Price Type'] = 'Farmgate'
+                        farmgate_regional_trend = farmgate_regional_trend.rename(columns={'Régions Name': 'Region', 'price_farmgate': 'Price'})
+                    else:
+                        farmgate_regional_trend = pd.DataFrame(columns=['Region', 'Date', 'Price', 'Price Type'])
+
+                    retail_regional_trend = _retail_df[_retail_df['commodity_id'] == commodity_id][['market', 'Year', 'Month', 'price_retail']].groupby(['market', 'Year', 'Month']).mean().reset_index()
+                    retail_regional_trend = retail_regional_trend.rename(columns={'market': 'Region', 'price_retail': 'Price'})
+                    if not retail_regional_trend.empty:
+                        retail_regional_trend['Date'] = pd.to_datetime(retail_regional_trend[['Year', 'Month']].assign(day=1), errors='coerce')
+                        retail_regional_trend = retail_regional_trend.dropna(subset=['Date']).reset_index(drop=True)
+                        retail_regional_trend['Price Type'] = 'Retail'
+                    else:
+                        retail_regional_trend = pd.DataFrame(columns=['Region', 'Date', 'Price', 'Price Type'])
+
+                    gross_margin_regional_trend = pd.DataFrame()
+                    net_margin_regional_trend = pd.DataFrame()
+                    if show_gross and not farmgate_regional_trend.empty and not retail_regional_trend.empty:
+                        farmgate_regions = set(farmgate_regional_trend['Region'])
+                        retail_regions = set(retail_regional_trend['Region'])
+                        common_regions = farmgate_regions.intersection(retail_regions)
+                        if not common_regions:
+                            st.warning("No common regions between farmgate and retail data for gross margin calculation.")
+                        else:
+                            margin_regional_trend = pd.merge(
+                                farmgate_regional_trend[['Region', 'Year', 'Month', 'Price', 'Date']],
+                                retail_regional_trend[['Region', 'Year', 'Month', 'Price', 'Date']],
+                                on=['Region', 'Year', 'Month', 'Date'],
+                                how='inner',
+                                suffixes=('_farmgate', '_retail')
+                            )
+                            margin_regional_trend['Price'] = margin_regional_trend['Price_retail'] - margin_regional_trend['Price_farmgate']
+                            margin_regional_trend['Price Type'] = 'Gross Margin'
+                            gross_margin_regional_trend = margin_regional_trend[['Region', 'Date', 'Price', 'Price Type']].dropna(subset=['Price'])
+
+                    if show_net and not _merged_df.empty:
+                        net_trend = _merged_df[_merged_df['commodity_id'] == commodity_id][['Régions Name', 'Year', 'Month', 'net_margin']].groupby(['Régions Name', 'Year', 'Month']).mean().reset_index()
+                        if not net_trend.empty:
+                            net_trend['Date'] = pd.to_datetime(net_trend[['Year', 'Month']].assign(day=1), errors='coerce')
+                            net_trend = net_trend.dropna(subset=['Date']).reset_index(drop=True)
+                            net_trend['Price'] = net_trend['net_margin']
+                            net_trend['Price Type'] = 'Net Margin'
+                            net_trend = net_trend.rename(columns={'Régions Name': 'Region'})
+                            net_margin_regional_trend = net_trend[['Region', 'Date', 'Price', 'Price Type']]
+
+                    combined_regional_trend = pd.concat([farmgate_regional_trend,
+                                                        retail_regional_trend,
+                                                        gross_margin_regional_trend,
+                                                        net_margin_regional_trend], ignore_index=True)
+                    return combined_regional_trend
+                except Exception as e:
+                    st.error(f"Failed to compute regional price trends: {e}")
+                    return pd.DataFrame(columns=['Region', 'Date', 'Price', 'Price Type'])
+
+            try:
+                combined_regional_trend = compute_regional_trends(prices_df, retail_df, merged_df, selected_commodity_id, show_gross_margin, show_net_margin)
+                if combined_regional_trend.empty:
+                    st.warning(f"No regional trend data available for {commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)}.")
+                else:
+                    fig_regional = go.Figure()
+                    regions = combined_regional_trend['Region'].unique()
+                    for region in regions:
+                        farmgate_data = combined_regional_trend[(combined_regional_trend['Region'] == region) & (combined_regional_trend['Price Type'] == 'Farmgate')]
+                        if not farmgate_data.empty:
+                            fig_regional.add_trace(go.Scatter(
+                                x=farmgate_data['Date'],
+                                y=farmgate_data['Price'],
+                                mode='lines+markers',
+                                name=f'{region} Farmgate',
+                                line=dict(color='#2ca02c', width=1.5),
+                                marker=dict(size=4),
+                                hovertemplate=f'%{x|%b %Y}<br>Price: %{y:.2f}<br>Region: {region}<br>Type: Farmgate'
+                            ))
+                        retail_data = combined_regional_trend[(combined_regional_trend['Region'] == region) & (combined_regional_trend['Price Type'] == 'Retail')]
+                        if not retail_data.empty:
+                            fig_regional.add_trace(go.Scatter(
+                                x=retail_data['Date'],
+                                y=retail_data['Price'],
+                                mode='lines+markers',
+                                name=f'{region} Retail',
+                                line=dict(color='#9467bd', width=1.5),
+                                marker=dict(size=4),
+                                hovertemplate=f'%{x|%b %Y}<br>Price: %{y:.2f}<br>Region: {region}<br>Type: Retail'
+                            ))
+                        if show_gross_margin:
+                            gross_data = combined_regional_trend[(combined_regional_trend['Region'] == region) & (combined_regional_trend['Price Type'] == 'Gross Margin')]
+                            if not gross_data.empty:
+                                fig_regional.add_trace(go.Scatter(
+                                    x=gross_data['Date'],
+                                    y=gross_data['Price'],
+                                    mode='lines+markers',
+                                    name=f'{region} Gross Margin',
+                                    line=dict(color='#d62728', width=1.5, dash='dash'),
+                                    marker=dict(size=4),
+                                    hovertemplate=f'%{x|%b %Y}<br>Margin: %{y:.2f}<br>Region: {region}<br>Type: Gross Margin'
+                                ))
+                        if show_net_margin:
+                            net_data = combined_regional_trend[(combined_regional_trend['Region'] == region) & (combined_regional_trend['Price Type'] == 'Net Margin')]
+                            if not net_data.empty:
+                                fig_regional.add_trace(go.Scatter(
+                                    x=net_data['Date'],
+                                    y=net_data['Price'],
+                                    mode='lines+markers',
+                                    name=f'{region} Net Margin',
+                                    line=dict(color='#ff7f0e', width=1.5, dash='dot'),
+                                    marker=dict(size=4),
+                                    hovertemplate=f'%{x|%b %Y}<br>Margin: %{y:.2f}<br>Region: {region}<br>Type: Net Margin'
+                                ))
+
+                    fig_regional.update_layout(
+                        title=f"{commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)} Regional Price and Margin Trends",
+                        xaxis_title="Date",
+                        yaxis_title="Average Price/Margin (Unit2)",
+                        font=dict(family="Roboto", sans-serif), size=12),
+                        hovermode="x unified",
+                        showlegend=True,
+                        template="plotly_white",
+                        xaxis=dict(showgrid=True, gridcolor='rgba(200,200,200,0.2)'),
+                        yaxis=dict(showgrid=True, gridcolor='rgba(200,200,200,0.2)')
+                    )
+                    st.plotly_chart(fig_regional, use_container_width=True))
+
+                # Margin Prediction Model Results
+                st.markdown("### Net Margin Prediction Model")
+                if st.session_state.margin_model:
+                    st.write(f"Model trained successfully with R² Score: {st.session_state.margin_r2:.2f}")
+                    if not merged_df.empty and st.session_state['margin_model']:
+                        sample_df = merged_df[merged_df['commodity_id'] == selected_commodity_id].sample(n=min(5, len(merged_df)), random_state=42))
+                        if not sample_df.empty:
+                            predictions = st.session_state.margin_model.predict(sample_df[['price_farmgate', 'price_retail', 'distance_to_market_km', 'friction', 'travel_time', 'commodity_id']])
+                            st.markdown("#### Sample Predictions")
+                            for i, (idx, row) in enumerate(sample_df.iterrows()):
+                                st.write(f"Region: {row['Régions Name']}, Market: {row['market']}, Actual Net Margin: {row['net_margin']:.2f}, Predicted: {predictions[i]:.2f}")
+                        else:
+                            st.warning("No data available for predictions for the selected commodity.")
+                else:
+                    st.warning("Margin prediction model could not be trained due to missing or insufficient data.")
+
+            except Exception as e:
+                st.error(f"Failed to generate regional price trends: {e}")
+
         else:
             st.warning("No data available for price trends. Please check your data.")
 
-    # Footer
     st.markdown("""
     <div class="footer">
-        <p>Developed by xAI in collaboration with IFPRI | Data Sources: IFPRI, OpenStreetMap | © 2025</p>
+        <p>Developed by xAI in collaboration with IFPRI | Data Sources: IFPRI, OpenStreetMap | © 2023
     </div>
     """, unsafe_allow_html=True)
 
