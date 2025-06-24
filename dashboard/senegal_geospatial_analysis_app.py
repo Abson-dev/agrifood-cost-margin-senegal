@@ -364,9 +364,7 @@ def main():
                     latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_id'].isin(selected_commodity_ids)]
                 if len(latest_farmgate_prices) > 500:
                     latest_farmgate_prices = latest_farmgate_prices.head(500)
-                    st.warning("Limited to 500 farmgate price markers for —
-
-System: performance.")
+                    st.warning("Limited to 500 farmgate price markers for — System: performance.")
             if not retail_df.empty:
                 filtered_retail = retail_df[retail_df['Year'] == selected_year] if selected_year else retail_df
                 if selected_month:
