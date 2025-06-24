@@ -364,7 +364,7 @@ def main():
                     latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_id'].isin(selected_commodity_ids)]
                 if len(latest_farmgate_prices) > 500:
                     latest_farmgate_prices = latest_farmgate_prices.head(500)
-                    st.warning("Limited to 500 farmgate price markers for performance.")
+                    st.warning("Limited to 500 farmgate price markers for — System: performance.")
             if not retail_df.empty:
                 filtered_retail = retail_df[retail_df['Year'] == selected_year] if selected_year else retail_df
                 if selected_month:
@@ -515,7 +515,7 @@ def main():
                                         <span class="legend-color" style="background:#800026;"></span> >1440
                                     </div>
                                 </div>
-                                """, unsafe_allow_html=True")
+                                """, unsafe_allow_html=True)
                         if show_friction:
                             with col2:
                                 st.markdown("""
@@ -534,7 +534,7 @@ def main():
                                         <span class="legend-color" style="background:#c2e699;"></span> ≤ 0.5
                                     </div>
                                     <div class="legend-item">
-                                        <span class="legend-color" style="background:#fdae61;"></span> ≤ 1
+                                        <span class="legend-color" style="background:#fdae61;"></span> ≤ 1.0
                                     </div>
                                     <div class="legend-item">
                                         <span class="legend-color" style="background:#f46d43;"></span> ≤ 2.0
@@ -658,112 +658,6 @@ def main():
                         yaxis=dict(showgrid=True, gridcolor='rgba(200,200,200,0.2)')
                     )
                     st.plotly_chart(fig, use_container_width=True)
-
-                # New: Regional Trends
-                st.markdown("### Farmgate, Retail, and Gross Margin Trends by Region")
-                try:
-                    # Calculate farmgate trend per region
-                    farmgate_regional_trend = prices_df[prices_df['commodity_id'] == selected_commodity_id][['Régions Name', 'Year', 'Month', 'Price']].groupby(['Régions Name', 'Year', 'Month']).mean().reset_index()
-                    if not farmgate_regional_trend.empty:
-                        farmgate_regional_trend['Date'] = pd.to_datetime(farmgate_regional_trend[['Year', 'Month']].assign(day=1), errors='coerce')
-                        farmgate_regional_trend = farmgate_regional_trend.dropna(subset=['Date']).reset_index(drop=True)
-                        farmgate_regional_trend['Price Type'] = 'Farmgate'
-                    else:
-                        farmgate_regional_trend = pd.DataFrame(columns=['Régions Name', 'Date', 'Price', 'Price Type'])
-
-                    # Calculate retail trend per region
-                    retail_regional_trend = retail_df[retail_df['commodity_id'] == selected_commodity_id][['market', 'Year', 'Month', 'Price']].groupby(['market', 'Year', 'Month']).mean().reset_index()
-                    retail_regional_trend = retail_regional_trend.rename(columns={'market': 'Region'})
-                    if not retail_regional_trend.empty:
-                        retail_regional_trend['Date'] = pd.to_datetime(retail_regional_trend[['Year', 'Month']].assign(day=1), errors='coerce')
-                        retail_regional_trend = retail_regional_trend.dropna(subset=['Date']).reset_index(drop=True)
-                        retail_regional_trend['Price Type'] = 'Retail'
-                    else:
-                        retail_regional_trend = pd.DataFrame(columns=['Region', 'Date', 'Price', 'Price Type'])
-
-                    # Calculate gross margin per region
-                    if show_gross_margin and not farmgate_regional_trend.empty and not retail_regional_trend.empty:
-                        # Merge on common regions and dates
-                        margin_regional_trend = pd.merge(
-                            farmgate_regional_trend[['Régions Name', 'Year', 'Month', 'Price', 'Date']],
-                            retail_regional_trend[['Region', 'Year', 'Month', 'Price', 'Date']],
-                            left_on=['Régions Name', 'Year', 'Month', 'Date'],
-                            right_on=['Region', 'Year', 'Month', 'Date'],
-                            how='inner',
-                            suffixes=('_farmgate', '_retail')
-                        )
-                        margin_regional_trend['Price'] = margin_regional_trend['Price_retail'] - margin_regional_trend['Price_farmgate']
-                        margin_regional_trend['Price Type'] = 'Gross Margin'
-                        margin_regional_trend['Region'] = margin_regional_trend['Régions Name']
-                        margin_regional_trend = margin_regional_trend[['Region', 'Date', 'Price', 'Price Type']].dropna(subset=['Price'])
-                    else:
-                        margin_regional_trend = pd.DataFrame(columns=['Region', 'Date', 'Price', 'Price Type'])
-
-                    # Combine regional trends
-                    farmgate_regional_trend = farmgate_regional_trend.rename(columns={'Régions Name': 'Region'})
-                    if not farmgate_regional_trend.empty or not retail_regional_trend.empty or not margin_regional_trend.empty:
-                        combined_regional_trend = pd.concat([farmgate_regional_trend, retail_regional_trend, margin_regional_trend], ignore_index=True)
-                    else:
-                        combined_regional_trend = pd.DataFrame(columns=['Region', 'Date', 'Price', 'Price Type'])
-
-                    if combined_regional_trend.empty:
-                        st.warning(f"No regional trend data available for {commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)}.")
-                    else:
-                        fig_regional = go.Figure()
-                        regions = combined_regional_trend['Region'].unique()
-                        for region in regions:
-                            # Farmgate
-                            farmgate_data = combined_regional_trend[(combined_regional_trend['Region'] == region) & (combined_regional_trend['Price Type'] == 'Farmgate')]
-                            if not farmgate_data.empty:
-                                fig_regional.add_trace(go.Scatter(
-                                    x=farmgate_data['Date'],
-                                    y=farmgate_data['Price'],
-                                    mode='lines+markers',
-                                    name=f'{region} Farmgate',
-                                    line=dict(color='#2ca02c', width=1.5),
-                                    marker=dict(size=4),
-                                    hovertemplate=f'%{x|%b %Y}<br>Price: %{y:.2f}<br>Region: {region}<br>Type: Farmgate'
-                                ))
-                            # Retail
-                            retail_data = combined_regional_trend[(combined_regional_trend['Region'] == region) & (combined_regional_trend['Price Type'] == 'Retail')]
-                            if not retail_data.empty:
-                                fig_regional.add_trace(go.Scatter(
-                                    x=retail_data['Date'],
-                                    y=retail_data['Price'],
-                                    mode='lines+markers',
-                                    name=f'{region} Retail',
-                                    line=dict(color='#9467bd', width=1.5),
-                                    marker=dict(size=4),
-                                    hovertemplate=f'%{x|%b %Y}<br>Price: %{y:.2f}<br>Region: {region}<br>Type: Retail'
-                                ))
-                            # Gross Margin
-                            if show_gross_margin:
-                                margin_data = combined_regional_trend[(combined_regional_trend['Region'] == region) & (combined_regional_trend['Price Type'] == 'Gross Margin')]
-                                if not margin_data.empty:
-                                    fig_regional.add_trace(go.Scatter(
-                                        x=margin_data['Date'],
-                                        y=margin_data['Price'],
-                                        mode='lines+markers',
-                                        name=f'{region} Gross Margin',
-                                        line=dict(color='#d62728', width=1.5, dash='dash'),
-                                        marker=dict(size=4),
-                                        hovertemplate=f'%{x|%b %Y}<br>Margin: %{y:.2f}<br>Region: {region}<br>Type: Gross Margin'
-                                    ))
-
-                        fig_regional.update_layout(
-                            title=f"{commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)} Regional Price and Margin",
-                            xaxis_title="Date",
-                            yaxis_title="Average Price/Margin (Unit2)",
-                            font=dict(family="Roboto, sans-serif", size=12),
-                            hovermode="x unified",
-                            showlegend=True,
-                            template="plotly_white",
-                            xaxis=dict(showgrid=True, gridcolor='rgba(200,200,200,0.2)'),
-                            yaxis=dict(showgrid=True, gridcolor='rgba(200,200,200,0.2)')
-                        )
-                        st.plotly_chart(fig_regional, use_container_width=True)
-                except Exception as e:
-                    st.error(f"Failed to generate regional price trends: {e}")
             except Exception as e:
                 st.error(f"Failed to generate price trends: {e}")
         else:
