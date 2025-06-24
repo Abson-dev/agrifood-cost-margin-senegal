@@ -1,5 +1,7 @@
+```python
 import os
 import json
+import math
 import rasterio
 import numpy as np
 import pandas as pd
@@ -8,6 +10,7 @@ import folium
 from folium.plugins import MarkerCluster, MiniMap, Fullscreen
 import streamlit as st
 from streamlit_folium import st_folium
+from geopy.distance import geodesic
 import plotly.express as px
 import plotly.graph_objects as go
 import uuid
@@ -22,20 +25,21 @@ DEFAULT_FILES = {
     'friction': os.path.join(BASE_DIR, '201501_Global_Travel_Speed_Friction_Surface_SEN.tiff'),
     'markets': os.path.join(BASE_DIR, 'markets_from_excel.geojson'),
     'roads': os.path.join(BASE_DIR, 'roads_filtered.geojson'),
+'),
     'prices': os.path.join(BASE_DIR, 'merged_farmgate_retail_prices_senegal.xlsx')
 }
 
 # Initialize session state
 if 'map_data_updated' not in st.session_state:
-    st.session_state.map_data_updated = False
-if 'latest_farmgate_prices' not in st.session_state:
-    st.session_state.latest_farmgate_prices = pd.DataFrame()
-if 'latest_retail_prices' not in st.session_state:
-    st.session_state.latest_retail_prices = pd.DataFrame()
+    st.session_state['map_data_updated'] = False
+if 'latest_farmgate_prices'' not in st.session_state:
+    st.session_state['latest_farmgate_prices'] = pd.DataFrame()
+if 'latest_retail_prices'' not in st.session_state:
+    st.session_state['latest_retail_prices'] = pd.DataFrame()
 if 'file_paths' not in st.session_state:
-    st.session_state.file_paths = DEFAULT_FILES.copy()
-if 'map_render_key' not in st.session_state:
-    st.session_state.map_render_key = 0
+    st.session_state['file_paths'] = DEFAULT_FILES.copy()
+if 'map_render_key'' not in st.session_state:
+    st.session_state['map_render_key'] = 0
 
 # -------------------------------
 # Helper Functions
@@ -48,7 +52,7 @@ def validate_file(file_path, file_type):
 
 def generate_colors(data, breaks, colors):
     """Convert raster data to RGB image based on specified colors."""
-    rgb = np.zeros((data.shape[0], data.shape[1], 3), dtype=np.uint8)
+    rgb = np.zeros((data.shape[0], data.shape[1], 3), dtype=np.uint8')
     for i in range(len(breaks) - 1):
         mask = (data >= breaks[i]) & (data < breaks[i + 1])
         rgb[mask] = colors[i]
@@ -59,6 +63,38 @@ def cleanup_temp_files(*files):
     for file in files:
         if os.path.exists(file):
             os.remove(file)
+
+def calculate_nearest_market_distance(farmgate_df, markets_geojson):
+    """Calculate the distance from each farmgate to the nearest market."""
+    if farmgate_df.empty or not markets_geojson or not markets_geojson.get('features'):
+        return farmgate_df
+    
+    # Initialize the distance column
+    farmgate_df['Distance_to_Nearest_Market_km'] = np.nan
+    
+    # Extract market coordinates
+    market_coords = []
+    for feature in markets_geojson['features']:
+        if feature['geometry']['type'] == 'Point':
+            coords = feature['geometry']['coordinates']
+            if len(coords) == 2 and all(isinstance(c, (int, float)) for c in coords):
+                # GeoJSON is [lon, lat], convert to [lat, lon] for geopy
+                market_coords.append((coords[1], coords[0]))
+    
+    if not market_coords:
+        st.warning("No valid market coordinates found for distance calculation.")
+        return farmgate_df
+    
+    # Calculate distance for each farmgate
+    for idx, row in farmgate_df.iterrows():
+        if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
+            continue
+        farmgate_point = (row['Régions - Latitude'], row['Régions - Longitude'])
+        # Find the minimum distance to any market
+        distances = [geodesic(farmgate_point, market).kilometers for market in market_coords]
+        farmgate_df.at[idx, 'Distance_to_Nearest_Market_km'] = min(distances)
+    
+    return farmgate_df
 
 # -------------------------------
 # Load and Process Rasters
@@ -362,9 +398,11 @@ def main():
                 latest_farmgate_prices = filtered_farmgate.sort_values('Date').groupby(['Régions Name', 'commodity_id']).last().reset_index()
                 if selected_commodity_ids:
                     latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_id'].isin(selected_commodity_ids)]
+                # Calculate distance to nearest market
+                latest_farmgate_prices = calculate_nearest_market_distance(latest_farmgate_prices, markets)
                 if len(latest_farmgate_prices) > 500:
                     latest_farmgate_prices = latest_farmgate_prices.head(500)
-                    st.warning("Limited to 500 farmgate price markers for — System: performance.")
+                    st.warning("Limited to 500 farmgate price markers for performance.")
             if not retail_df.empty:
                 filtered_retail = retail_df[retail_df['Year'] == selected_year] if selected_year else retail_df
                 if selected_month:
@@ -431,7 +469,9 @@ def main():
                         for _, row in st.session_state.latest_farmgate_prices.iterrows():
                             if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
                                 continue
-                            popup_text = f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
+                            # Include distance in popup if available
+                            distance_text = f"<b>Distance to Nearest Market:</b> {row['Distance_to_Nearest_Market_km']:.2f} km<br>" if not pd.isna(row.get('Distance_to_Nearest_Market_km')) else ""
+                            popup_text = f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br>{distance_text}<b>Date:</b> {row['Year']}-{row['Month']:02d}"
                             folium.Marker(
                                 location=[row['Régions - Latitude'], row['Régions - Longitude']],
                                 popup=folium.Popup(popup_text, max_width=250),
@@ -555,10 +595,15 @@ def main():
     with tab2:
         st.subheader("Data Summary")
         st.markdown("### Data Overview")
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         col1.metric("Markets", len(markets['features']) if markets else 0)
         col2.metric("Road Features", len(roads_filtered['features']) if roads_filtered else 0)
         col3.metric("Price Points", len(st.session_state.latest_farmgate_prices) + len(st.session_state.latest_retail_prices))
+        if not st.session_state.latest_farmgate_prices.empty and 'Distance_to_Nearest_Market_km' in st.session_state.latest_farmgate_prices.columns:
+            avg_distance = st.session_state.latest_farmgate_prices['Distance_to_Nearest_Market_km'].mean()
+            col4.metric("Avg Distance to Market (km)", f"{avg_distance:.2f}" if not pd.isna(avg_distance) else "N/A")
+        else:
+            col4.metric("Avg Distance to Market (km)", "N/A")
 
     with tab3:
         st.subheader("Price Trends")
@@ -672,3 +717,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+```
