@@ -1,7 +1,5 @@
-```python
 import os
 import json
-import math
 import rasterio
 import numpy as np
 import pandas as pd
@@ -25,20 +23,19 @@ DEFAULT_FILES = {
     'friction': os.path.join(BASE_DIR, '201501_Global_Travel_Speed_Friction_Surface_SEN.tiff'),
     'markets': os.path.join(BASE_DIR, 'markets_from_excel.geojson'),
     'roads': os.path.join(BASE_DIR, 'roads_filtered.geojson'),
-'),
     'prices': os.path.join(BASE_DIR, 'merged_farmgate_retail_prices_senegal.xlsx')
 }
 
 # Initialize session state
 if 'map_data_updated' not in st.session_state:
     st.session_state['map_data_updated'] = False
-if 'latest_farmgate_prices'' not in st.session_state:
+if 'latest_farmgate_prices' not in st.session_state:
     st.session_state['latest_farmgate_prices'] = pd.DataFrame()
-if 'latest_retail_prices'' not in st.session_state:
+if 'latest_retail_prices' not in st.session_state:
     st.session_state['latest_retail_prices'] = pd.DataFrame()
 if 'file_paths' not in st.session_state:
     st.session_state['file_paths'] = DEFAULT_FILES.copy()
-if 'map_render_key'' not in st.session_state:
+if 'map_render_key' not in st.session_state:
     st.session_state['map_render_key'] = 0
 
 # -------------------------------
@@ -52,7 +49,7 @@ def validate_file(file_path, file_type):
 
 def generate_colors(data, breaks, colors):
     """Convert raster data to RGB image based on specified colors."""
-    rgb = np.zeros((data.shape[0], data.shape[1], 3), dtype=np.uint8')
+    rgb = np.zeros((data.shape[0], data.shape[1], 3), dtype=np.uint8)
     for i in range(len(breaks) - 1):
         mask = (data >= breaks[i]) & (data < breaks[i + 1])
         rgb[mask] = colors[i]
