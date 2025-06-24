@@ -3,6 +3,7 @@ import json
 import rasterio
 import numpy as np
 import pandas as pd
+import geopandas as gpd
 from PIL import Image
 import folium
 from folium.plugins import MarkerCluster, MiniMap, Fullscreen
@@ -12,7 +13,9 @@ from geopy.distance import geodesic
 import plotly.express as px
 import plotly.graph_objects as go
 import uuid
+import tempfile
 import atexit
+from scipy.interpolate import interp1d
 
 # -------------------------------
 # Configuration: File Paths
@@ -37,11 +40,22 @@ if 'file_paths' not in st.session_state:
     st.session_state['file_paths'] = DEFAULT_FILES.copy()
 if 'map_render_key' not in st.session_state:
     st.session_state['map_render_key'] = 0
+if 'commodity_map' not in st.session_state:
+    st.session_state['commodity_map'] = {}
 
 # -------------------------------
 # Helper Functions
 # -------------------------------
+def ensure_default_files():
+    """Check if default files exist, prompt for uploads if missing."""
+    for key, path in DEFAULT_FILES.items():
+        if not os.path.exists(path):
+            st.warning(f"Default {key} file not found. Please upload a {key} file.")
+            return False
+    return True
+
 def validate_file(file_path, file_type):
+    """Validate file existence."""
     if not os.path.exists(file_path):
         st.error(f"{file_type} file not found: {file_path}")
         return False
@@ -61,37 +75,56 @@ def cleanup_temp_files(*files):
         if os.path.exists(file):
             os.remove(file)
 
-def calculate_nearest_market_distance(farmgate_df, markets_geojson):
-    """Calculate the distance from each farmgate to the nearest market."""
-    if farmgate_df.empty or not markets_geojson or not markets_geojson.get('features'):
+def calculate_nearest_market_distance(farmgate_df, markets_gdf):
+    """Calculate distance from each farmgate to nearest market."""
+    if farmgate_df.empty or markets_gdf.empty:
         return farmgate_df
     
-    # Initialize the distance column
     farmgate_df['Distance_to_Nearest_Market_km'] = np.nan
-    
-    # Extract market coordinates
-    market_coords = []
-    for feature in markets_geojson['features']:
-        if feature['geometry']['type'] == 'Point':
-            coords = feature['geometry']['coordinates']
-            if len(coords) == 2 and all(isinstance(c, (int, float)) for c in coords):
-                # GeoJSON is [lon, lat], convert to [lat, lon] for geopy
-                market_coords.append((coords[1], coords[0]))
+    market_coords = [(row.geometry.y, row.geometry.x) for _, row in markets_gdf.iterrows() if row.geometry.type == 'Point']
     
     if not market_coords:
         st.warning("No valid market coordinates found for distance calculation.")
         return farmgate_df
     
-    # Calculate distance for each farmgate
     for idx, row in farmgate_df.iterrows():
         if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
             continue
         farmgate_point = (row['Régions - Latitude'], row['Régions - Longitude'])
-        # Find the minimum distance to any market
         distances = [geodesic(farmgate_point, market).kilometers for market in market_coords]
         farmgate_df.at[idx, 'Distance_to_Nearest_Market_km'] = min(distances)
     
     return farmgate_df
+
+def interpolate_missing(data, date_col='Date', value_col='Price'):
+    """Interpolate missing price data."""
+    if data.empty:
+        return data
+    x = data[date_col].map(lambda x: x.timestamp())
+    y = data[value_col]
+    f = interp1d(x, y, kind='linear', fill_value='extrapolate')
+    new_dates = pd.date_range(data[date_col].min(), data[date_col].max(), freq='M')
+    new_values = f([d.timestamp() for d in new_dates])
+    return pd.DataFrame({'Date': new_dates, value_col: new_values})
+
+def generate_legend_html(breaks, colors, title):
+    """Generate dynamic legend HTML."""
+    html = f'<div class="legend-container"><div class="legend-title">{title}</div>'
+    for i, (b1, b2) in enumerate(zip(breaks[:-1], breaks[1:])):
+        color = f'rgb{colors[i]}'
+        label = f'{b1:.3f}–{b2:.3f}' if b2 != np.inf else f'>{b1:.3f}'
+        html += f'<div class="legend-item"><span class="legend-color" style="background:{color};"></span> {label}</div>'
+    html += '</div>'
+    return html
+
+def validate_commodity_overlap(farmgate_df, retail_df):
+    """Validate commodity ID overlap."""
+    if farmgate_df.empty or retail_df.empty:
+        return set()
+    common_ids = set(farmgate_df['commodity_id']).intersection(set(retail_df['commodity_id']))
+    if not common_ids:
+        st.error("No common commodity IDs found between farmgate and retail data.")
+    return common_ids
 
 # -------------------------------
 # Load and Process Rasters
@@ -100,6 +133,11 @@ def calculate_nearest_market_distance(farmgate_df, markets_geojson):
 def load_and_process_raster(file_path, downsample_factor=2):
     try:
         with rasterio.open(file_path) as src:
+            if src.count != 1:
+                st.error(f"Raster {file_path} must have exactly one band.")
+                return None, None
+            if src.crs is None:
+                st.warning(f"No CRS found for {file_path}. Assuming WGS84.")
             data = src.read(1, out_shape=(1, src.height // downsample_factor, src.width // downsample_factor), resampling=rasterio.enums.Resampling.bilinear)
             nodata = src.nodata
             bounds = (src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top)
@@ -116,20 +154,22 @@ def generate_travel_image(data, bounds):
     breaks = [0, 10, 30, 60, 120, 240, 1440, np.inf]
     colors = [(255, 255, 204), (255, 237, 160), (254, 178, 76), (253, 141, 60), (240, 59, 32), (189, 0, 38), (128, 0, 38)]
     rgb = generate_colors(data, breaks, colors)
-    travel_png_path = f'travel_time_{str(uuid.uuid4())}.png'
-    Image.fromarray(rgb).save(travel_png_path)
+    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+        travel_png_path = tmp.name
+        Image.fromarray(rgb).save(travel_png_path)
     atexit.register(cleanup_temp_files, travel_png_path)
-    return travel_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
+    return travel_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]], breaks, colors
 
 @st.cache_data(hash_funcs={np.ma.MaskedArray: lambda x: hash((x.data.tobytes(), x.mask.tobytes()))})
 def generate_friction_image(data, bounds):
     friction_breaks = [0, 0.001, 0.01, 0.1, 0.5, 1.0, 2.0, np.inf]
-    friction_colors = [(0, 104, 55), (49, 163, 84), (120, 198, 121), (194, 230, 153), (253, 174, 97), (244, 109, 67), (165, 0, 38), (128, 0, 38)]
+    friction_colors = [(0, 104, 55), (49, 163, 84), (120, 198, 121), (194, 230, 153), (253, 174, 97), (244, 109, 67), (165, 0, 38)]
     rgb = generate_colors(data, friction_breaks, friction_colors)
-    friction_png_path = f'friction_surface_{str(uuid.uuid4())}.png'
-    Image.fromarray(rgb).save(friction_png_path)
+    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+        friction_png_path = tmp.name
+        Image.fromarray(rgb).save(friction_png_path)
     atexit.register(cleanup_temp_files, friction_png_path)
-    return friction_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]]
+    return friction_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]], friction_breaks, friction_colors
 
 # -------------------------------
 # Load GeoJSON Files
@@ -137,51 +177,21 @@ def generate_friction_image(data, bounds):
 @st.cache_data
 def load_geojson(file_path, max_features=500, is_roads=False):
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        if data.get('type') != 'FeatureCollection':
-            st.warning(f"{file_path} is not a valid FeatureCollection")
+        gdf = gpd.read_file(file_path)
+        if gdf.empty:
+            st.warning(f"{file_path} contains no valid features.")
             return None
-        features = data.get('features', [])
-        valid_features = []
-        invalid_count = 0
-        for feature in features:
-            try:
-                geom = feature.get('geometry', {})
-                if not geom or 'coordinates' not in geom:
-                    invalid_count += 1
-                    continue
-                coords = geom['coordinates']
-                if geom['type'] == 'Point':
-                    if not (isinstance(coords, list) and len(coords) == 2 and all(isinstance(c, (int, float)) for c in coords)):
-                        invalid_count += 1
-                        continue
-                    if not (-180 <= coords[0] <= 180 and -90 <= coords[1] <= 90):
-                        invalid_count += 1
-                        continue
-                elif geom['type'] in ['LineString', 'MultiLineString']:
-                    if geom['type'] == 'LineString' and not all(isinstance(c, list) and len(c) == 2 for c in coords):
-                        invalid_count += 1
-                        continue
-                else:
-                    invalid_count += 1
-                    continue
-                if is_roads and 'properties' in feature:
-                    highway = feature['properties'].get('highway', '')
-                    if highway and highway not in ['motorway', 'trunk', 'primary', 'secondary']:
-                        continue
-                valid_features.append(feature)
-            except Exception:
-                invalid_count += 1
-                continue
-        if invalid_count > 0:
-            st.warning(f"Skipped {invalid_count} invalid features in {file_path}")
-        if len(valid_features) > max_features:
-            st.warning(f"GeoJSON file {file_path} has {len(valid_features)} valid features. Limiting to {max_features} for performance.")
-            valid_features = valid_features[:max_features]
-        data['features'] = valid_features
-        st.info(f"Loaded {len(valid_features)} features from {file_path}")
-        return data if valid_features else None
+        if gdf.crs != 'EPSG:4326':
+            gdf = gdf.to_crs('EPSG:4326')
+        if is_roads:
+            valid_highways = ['motorway', 'trunk', 'primary', 'secondary']
+            gdf = gdf[gdf['highway'].isin(valid_highways)] if 'highway' in gdf.columns else gdf
+        if len(gdf) > max_features:
+            st.warning(f"GeoJSON file {file_path} has {len(gdf)} features. Limiting to {max_features}.")
+            gdf = gdf.head(max_features)
+        geojson_data = json.loads(gdf.to_json())
+        st.info(f"Loaded {len(gdf)} features from {file_path}")
+        return geojson_data if geojson_data['features'] else None
     except Exception as e:
         st.warning(f"Failed to load {file_path}: {e}")
         return None
@@ -201,7 +211,7 @@ def load_price_data(file_path):
         prices_df['Month'] = pd.to_numeric(prices_df['Month'], errors='coerce')
         prices_df = prices_df.dropna(subset=['Price', 'Year', 'Month', 'Régions - Latitude', 'Régions - Longitude', 'commodity_id'])
         if not prices_df.empty and (prices_df['Year'] < 2016).any() or (prices_df['Year'] > 2025).any():
-            st.warning("Farmgate data contains years outside 2016–2025. Invalid years will be filtered.")
+            st.warning("Farmgate data contains years outside 2016–2025. Filtering.")
             prices_df = prices_df[prices_df['Year'].between(2016, 2025)]
         return prices_df
     except Exception as e:
@@ -221,7 +231,7 @@ def load_retail_data(file_path):
         retail_df['Month'] = pd.to_numeric(retail_df['Month'], errors='coerce')
         retail_df = retail_df.dropna(subset=['Price', 'Year', 'Month', 'latitude', 'longitude', 'commodity_id'])
         if not retail_df.empty and (retail_df['Year'] < 2016).any() or (retail_df['Year'] > 2025).any():
-            st.warning("Retail data contains years outside 2016–2025. Invalid years will be filtered.")
+            st.warning("Retail data contains years outside 2016–2025. Filtering.")
             retail_df = retail_df[retail_df['Year'].between(2016, 2025)]
         return retail_df
     except Exception as e:
@@ -232,28 +242,35 @@ def load_retail_data(file_path):
 # Main Dashboard
 # -------------------------------
 def main():
-    # Custom CSS for styling
-    st.markdown("""
+    # Custom CSS for styling and responsiveness
+    map_height = st.session_state.get('map_height', 800)
+    st.markdown(f"""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
-    body { font-family: 'Roboto', sans-serif; }
-    .main { background-color: #f9fafb; }
-    .sidebar .sidebar-content { background-color: #ffffff; }
-    .stButton>button { background-color: #1e3a8a; color: white; border-radius: 8px; }
-    .stSelectbox, .stMultiselect { background-color: #f3f4f6; border-radius: 8px; }
-    .header { background-color: #1e3a8a; color: white; padding: 20px; border-radius: 8px; }
-    .footer { background-color: #1e3a8a; color: white; padding: 10px; text-align: center; margin-top: 20px; }
-    .stApp [data-testid="stMapContainer"] { 
+    body {{ font-family: 'Roboto', sans-serif; }}
+    .main {{ background-color: #f9fafb; }}
+    .sidebar .sidebar-content {{ background-color: #ffffff; }}
+    .stButton>button {{ background-color: #1e3a8a; color: white; border-radius: 8px; }}
+    .stSelectbox, .stMultiselect {{ background-color: #f3f4f6; border-radius: 8px; }}
+    .header {{ background-color: #1e3a8a; color: white; padding: 20px; border-radius: 8px; }}
+    .footer {{ background-color: #1e3a8a; color: white; padding: 10px; text-align: center; margin-top: 20px; }}
+    .folium-map {{ min-height: 400px; height: {map_height}px; max-height: 1000px; width: 100% !important; }}
+    .stApp [data-testid="stMapContainer"] {{ 
         margin-top: 10px; 
         width: 100% !important; 
         min-height: 400px; 
         max-height: 100vh; 
         overflow: auto; 
-    }
-    .legend-container { background-color: white; border: 2px solid grey; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3); margin-top: 10px; }
-    .legend-title { font-weight: bold; font-size: 14px; margin-bottom: 10px; }
-    .legend-item { display: flex; align-items: center; margin-bottom: 5px; font-size: 14px; }
-    .legend-color { width: 20px; height: 20px; margin-right: 8px; display: inline-block; }
+    }}
+    .legend-container {{ background-color: white; border: 2px solid grey; padding: 10px; box-shadow: 2px 2px 6px rgba(0,0,0,0.3); margin-top: 10px; }}
+    .legend-title {{ font-weight: bold; font-size: 14px; margin-bottom: 10px; }}
+    .legend-item {{ display: flex; align-items: center; margin-bottom: 5px; font-size: 14px; }}
+    .legend-color {{ width: 20px; height: 20px; margin-right: 8px; display: inline-block; }}
+    @media (max-width: 600px) {{
+        .folium-map {{ height: 60vh; }}
+        .legend-container {{ font-size: 12px; padding: 5px; }}
+        .legend-color {{ width: 15px; height: 15px; }}
+    }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -289,6 +306,8 @@ def main():
     st.session_state.file_paths.update(uploaded_files)
 
     # Validate files
+    if not ensure_default_files():
+        return
     for key, path in st.session_state.file_paths.items():
         if not validate_file(path, key.capitalize()):
             return
@@ -313,18 +332,34 @@ def main():
         return
 
     # Generate raster images
-    travel_png_path, travel_image_bounds = generate_travel_image(travel_time, travel_bounds)
-    friction_png_path, friction_image_bounds = generate_friction_image(friction_data, friction_bounds)
+    travel_png_path, travel_image_bounds, travel_breaks, travel_colors = generate_travel_image(travel_time, travel_bounds)
+    friction_png_path, friction_image_bounds, friction_breaks, friction_colors = generate_friction_image(friction_data, friction_bounds)
 
     # Validate price data columns
     farmgate_required_columns = ['Régions Name', 'Commodity', 'commodity_english', 'commodity_id', 'Price', 'Unit2', 'Régions - Latitude', 'Régions - Longitude', 'Year', 'Month']
     retail_required_columns = ['market', 'commodity', 'commodity_id', 'Price', 'Unit2', 'latitude', 'longitude', 'Year', 'Month']
     if not prices_df.empty and any(col not in prices_df.columns for col in farmgate_required_columns):
-        st.error(f"Missing required columns in farmgate prices: {', '.join([col for col in farmgate_required_columns if col not in prices_df.columns])}")
+        st.error(f"Missing columns in farmgate prices: {', '.join([col for col in farmgate_required_columns if col not in prices_df.columns])}")
         prices_df = pd.DataFrame()
     if not retail_df.empty and any(col not in retail_df.columns for col in retail_required_columns):
-        st.error(f"Missing required columns in retail prices: {', '.join([col for col in retail_required_columns if col not in retail_df.columns])}")
+        st.error(f"Missing columns in retail prices: {', '.join([col for col in retail_required_columns if col not in retail_df.columns])}")
         retail_df = pd.DataFrame()
+
+    # Create commodity name mapping
+    if prices_df.empty and retail_df.empty:
+        st.error("No valid price data loaded. Please check your files.")
+        return
+    commodity_map = pd.concat([
+        prices_df[['commodity_id', 'commodity_english']].drop_duplicates() if not prices_df.empty else pd.DataFrame(),
+        retail_df[['commodity_id', 'commodity']].drop_duplicates().rename(columns={'commodity': 'commodity_english'}) if not retail_df.empty else pd.DataFrame()
+    ]).drop_duplicates(subset='commodity_id').set_index('commodity_id')['commodity_english'].to_dict()
+    st.session_state.commodity_map = commodity_map
+
+    # Validate commodity overlap
+    commodity_options = validate_commodity_overlap(prices_df, retail_df)
+    if not commodity_options:
+        return
+    commodity_id_to_name = {cid: commodity_map.get(cid, str(cid)) for cid in commodity_options}
 
     # Tabs for different views
     tab1, tab2, tab3 = st.tabs(["Interactive Map", "Data Summary", "Price Trends"])
@@ -346,24 +381,9 @@ def main():
         selected_month_name = st.sidebar.selectbox("Select Month", [month_names.get(m, str(m)) for m in available_months], index=available_months.index(latest_month) if latest_month in available_months else 0, key="month_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
         selected_month = next((k for k, v in month_names.items() if v == selected_month_name), selected_month_name)
 
-        # Filter commodities
-        commodity_options = []
-        commodity_id_to_name = {}
-        if not prices_df.empty and not retail_df.empty:
-            farmgate_commodities = set(prices_df['commodity_id'].unique())
-            retail_commodities = set(retail_df['commodity_id'].unique())
-            common_commodity_ids = farmgate_commodities.intersection(retail_commodities)
-            for cid in common_commodity_ids:
-                name = prices_df[prices_df['commodity_id'] == cid]['commodity_english'].iloc[0] if cid in prices_df['commodity_id'].values else retail_df[retail_df['commodity_id'] == cid]['commodity'].iloc[0]
-                commodity_options.append(cid)
-                commodity_id_to_name[cid] = name
-            commodity_options = sorted(commodity_options, key=lambda x: commodity_id_to_name[x])
-        if not commodity_options:
-            st.error("No commodities found in both farmgate and retail datasets with common commodity IDs. Please check your data.")
-            return
         selected_commodity_ids = st.sidebar.multiselect(
             "Select Commodities",
-            options=commodity_options,
+            options=sorted(commodity_options, key=lambda x: commodity_id_to_name[x]),
             format_func=lambda x: commodity_id_to_name.get(x, str(x)),
             default=commodity_options,
             key="commodity_select",
@@ -381,6 +401,7 @@ def main():
 
         # Map height control
         map_height = st.sidebar.slider("Map Height (px)", 400, 1000, 800, key="map_height")
+        st.session_state.map_height = map_height
 
         # Update map data
         if st.session_state.map_data_updated or st.session_state.latest_farmgate_prices.empty or st.session_state.latest_retail_prices.empty:
@@ -395,8 +416,8 @@ def main():
                 latest_farmgate_prices = filtered_farmgate.sort_values('Date').groupby(['Régions Name', 'commodity_id']).last().reset_index()
                 if selected_commodity_ids:
                     latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_id'].isin(selected_commodity_ids)]
-                # Calculate distance to nearest market
-                latest_farmgate_prices = calculate_nearest_market_distance(latest_farmgate_prices, markets)
+                markets_gdf = gpd.read_file(st.session_state.file_paths['markets']) if markets else gpd.GeoDataFrame()
+                latest_farmgate_prices = calculate_nearest_market_distance(latest_farmgate_prices, markets_gdf)
                 if len(latest_farmgate_prices) > 500:
                     latest_farmgate_prices = latest_farmgate_prices.head(500)
                     st.warning("Limited to 500 farmgate price markers for performance.")
@@ -408,7 +429,7 @@ def main():
                 filtered_retail = filtered_retail.dropna(subset=['Date'])
                 latest_retail_prices = filtered_retail.sort_values('Date').groupby(['market', 'commodity_id']).last().reset_index()
                 if latest_retail_prices.index.duplicated().any():
-                    st.warning("Duplicate indices found in retail prices. Removing duplicates.")
+                    st.warning("Duplicate indices in retail prices. Removing duplicates.")
                     latest_retail_prices = latest_retail_prices.drop_duplicates().reset_index(drop=True)
                 if selected_commodity_ids:
                     latest_retail_prices = latest_retail_prices[latest_retail_prices['commodity_id'].isin(selected_commodity_ids)]
@@ -443,7 +464,7 @@ def main():
                     # Add Markets Layer
                     if show_markets and markets:
                         market_group = folium.FeatureGroup(name="Markets", show=True)
-                        valid_markets = 0
+                        valid_markers = 0
                         for feature in markets.get('features', []):
                             if feature['geometry']['type'] == 'Point' and all(isinstance(c, (int, float)) for c in feature['geometry']['coordinates']):
                                 coords = feature['geometry']['coordinates'][::-1]
@@ -453,8 +474,8 @@ def main():
                                     popup=popup,
                                     icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
                                 ).add_to(market_group)
-                                valid_markets += 1
-                        if valid_markets == 0:
+                                valid_markers += 1
+                        if valid_markers == 0:
                             st.warning("No valid market locations found.")
                         else:
                             market_group.add_to(m)
@@ -466,7 +487,6 @@ def main():
                         for _, row in st.session_state.latest_farmgate_prices.iterrows():
                             if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
                                 continue
-                            # Include distance in popup if available
                             distance_text = f"<b>Distance to Nearest Market:</b> {row['Distance_to_Nearest_Market_km']:.2f} km<br>" if not pd.isna(row.get('Distance_to_Nearest_Market_km')) else ""
                             popup_text = f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br>{distance_text}<b>Date:</b> {row['Year']}-{row['Month']:02d}"
                             folium.Marker(
@@ -522,68 +542,15 @@ def main():
                     folium.LayerControl(collapsed=False).add_to(m)
                     st_folium(m, use_container_width=True, height=map_height, key=f"folium_map_{st.session_state.map_render_key}")
 
-                    # Add Legends Below Map (Travel on Left, Friction on Right)
+                    # Add Dynamic Legends
                     if show_travel or show_friction:
                         col1, col2 = st.columns(2)
                         if show_travel:
                             with col1:
-                                st.markdown("""
-                                <div class="legend-container">
-                                    <div class="legend-title">Travel Time (min)</div>
-                                    <div class="legend-item">
-                                        <span class="legend-color" style="background:#ffffcc;"></span> 0–10
-                                    </div>
-                                    <div class="legend-item">
-                                        <span class="legend-color" style="background:#ffeda0;"></span> 10–30
-                                    </div>
-                                    <div class="legend-item">
-                                        <span class="legend-color" style="background:#feb24c;"></span> 30–60
-                                    </div>
-                                    <div class="legend-item">
-                                        <span class="legend-color" style="background:#fd8d3c;"></span> 60–120
-                                    </div>
-                                    <div class="legend-item">
-                                        <span class="legend-color" style="background:#f03b20;"></span> 120–240
-                                    </div>
-                                    <div class="legend-item">
-                                        <span class="legend-color" style="background:#bd0026;"></span> 240–1440
-                                    </div>
-                                    <div class="legend-item">
-                                        <span class="legend-color" style="background:#800026;"></span> >1440
-                                    </div>
-                                </div>
-                                """, unsafe_allow_html=True)
+                                st.markdown(generate_legend_html(travel_breaks, travel_colors, "Travel Time (min)"), unsafe_allow_html=True)
                         if show_friction:
                             with col2:
-                                st.markdown("""
-                                <div class="legend-container">
-                                    <div class="legend-title">Friction (min/m)</div>
-                                    <div class="legend-item">
-                                        <span class="legend-color" style="background:#006837;"></span> ≤ 0.001
-                                    </div>
-                                    <div class="legend-item">
-                                        <span class="legend-color" style="background:#31a354;"></span> ≤ 0.01
-                                    </div>
-                                    <div class="legend-item">
-                                        <span class="legend-color" style="background:#78c679;"></span> ≤ 0.1
-                                    </div>
-                                    <div class="legend-item">
-                                        <span class="legend-color" style="background:#c2e699;"></span> ≤ 0.5
-                                    </div>
-                                    <div class="legend-item">
-                                        <span class="legend-color" style="background:#fdae61;"></span> ≤ 1.0
-                                    </div>
-                                    <div class="legend-item">
-                                        <span class="legend-color" style="background:#f46d43;"></span> ≤ 2.0
-                                    </div>
-                                    <div class="legend-item">
-                                        <span class="legend-color" style="background:#a50026;"></span> ≤ 5.0
-                                    </div>
-                                    <div class="legend-item">
-                                        <span class="legend-color" style="background:#800026;"></span> > 5.0
-                                    </div>
-                                </div>
-                                """, unsafe_allow_html=True)
+                                st.markdown(generate_legend_html(friction_breaks, friction_colors, "Friction (min/m)"), unsafe_allow_html=True)
                 except Exception as e:
                     st.error(f"Map rendering failed: {str(e)}. Please check data files or coordinates.")
                 finally:
@@ -608,7 +575,7 @@ def main():
             st.markdown("### Farmgate, Retail, and Gross Margin Trends")
             selected_commodity_id = st.selectbox(
                 "Select Commodity",
-                options=commodity_options,
+                options=sorted(commodity_options, key=lambda x: commodity_id_to_name[x]),
                 format_func=lambda x: commodity_id_to_name.get(x, str(x)),
                 key="trend_commodity_select"
             )
@@ -619,6 +586,7 @@ def main():
                 if not farmgate_trend.empty:
                     farmgate_trend['Date'] = pd.to_datetime(farmgate_trend[['Year', 'Month']].assign(day=1), errors='coerce')
                     farmgate_trend = farmgate_trend.dropna(subset=['Date']).reset_index(drop=True)
+                    farmgate_trend = interpolate_missing(farmgate_trend)
                     farmgate_trend['Price Type'] = 'Farmgate'
                 else:
                     farmgate_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
@@ -628,6 +596,7 @@ def main():
                 if not retail_trend.empty:
                     retail_trend['Date'] = pd.to_datetime(retail_trend[['Year', 'Month']].assign(day=1), errors='coerce')
                     retail_trend = retail_trend.dropna(subset=['Date']).reset_index(drop=True)
+                    retail_trend = interpolate_missing(retail_trend)
                     retail_trend['Price Type'] = 'Retail'
                 else:
                     retail_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
@@ -635,9 +604,9 @@ def main():
                 # Calculate gross margin
                 if show_gross_margin and not farmgate_trend.empty and not retail_trend.empty:
                     margin_trend = pd.merge(
-                        farmgate_trend[['Year', 'Month', 'Price', 'Date']],
-                        retail_trend[['Year', 'Month', 'Price', 'Date']],
-                        on=['Year', 'Month', 'Date'],
+                        farmgate_trend[['Date', 'Price']],
+                        retail_trend[['Date', 'Price']],
+                        on='Date',
                         how='inner',
                         suffixes=('_farmgate', '_retail')
                     )
@@ -648,11 +617,7 @@ def main():
                     margin_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
 
                 # Combine trends
-                if not farmgate_trend.empty or not retail_trend.empty or not margin_trend.empty:
-                    combined_trend = pd.concat([farmgate_trend, retail_trend, margin_trend], ignore_index=True)
-                else:
-                    combined_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
-
+                combined_trend = pd.concat([farmgate_trend, retail_trend, margin_trend], ignore_index=True)
                 if combined_trend.empty:
                     st.warning(f"No trend data available for {commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)}.")
                 else:
