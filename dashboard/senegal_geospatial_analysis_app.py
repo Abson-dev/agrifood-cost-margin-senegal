@@ -311,7 +311,7 @@ def main():
         return
     for key, path in st.session_state.file_paths.items():
         if not validate_file(path, key.capitalize()):
-            return False
+            return
 
     # Load data with progress bar
     with st.spinner("Loading data..."):
@@ -379,7 +379,7 @@ def main():
                        7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"}
         available_months = sorted(list(set(prices_df['Month'].unique()) | set(retail_df['Month'].unique()))) if not prices_df.empty or not retail_df.empty else list(range(1, 13))
         latest_month = max(available_months) if available_months else 12
-        selected_month_name = st.sidebar.selectbox("Select Month", [month_names.get(m, str(m)) for m in available_months], index=available_months.index(latest_month) if latest_month in available_months else 0, key="month_select", on_change=lambda: st.session_state.update({'month_select': True}))
+        selected_month_name = st.sidebar.selectbox("Select Month", [month_names.get(m, str(m)) for m in available_months], index=available_months.index(latest_month) if latest_month in available_months else 0, key="month_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
         selected_month = next((k for k, v in month_names.items() if v == selected_month_name), selected_month_name)
 
         selected_commodity_ids = st.sidebar.multiselect(
@@ -397,8 +397,8 @@ def main():
         show_friction = st.sidebar.checkbox("Friction Surface", value=False)
         show_roads = st.sidebar.checkbox("Roads", value=False)
         show_markets = st.sidebar.checkbox("Markets", value=True)
-        show_farmgate = st.sidebar.checkbox("Farmgate Prices", value=True)
-        show_retail = st.sidebar.checkbox("Retail Prices", value=True)
+        show_farmgate = st.sidebar.checkbox("Farmgate Prices", value=False)
+        show_retail = st.sidebar.checkbox("Retail Prices", value=False)
 
         # Map height control
         st.sidebar.slider("Map Height (px)", 400, 1000, st.session_state['map_height'], key="map_height")
@@ -412,33 +412,33 @@ def main():
                 if selected_month:
                     filtered_farmgate = filtered_farmgate[filtered_farmgate['Month'] == selected_month]
                 filtered_farmgate['Date'] = pd.to_datetime(filtered_farmgate[['Year', 'Month']].assign(day=1), errors='coerce')
-                filtered_farmgate = filtered_farmgate.dropna(subset=['Date']).dropna(subset=['date'])
-                latest_farmgate = filtered_farmgate.sort_values('Date').groupby(['Régions Name', 'commodity_id']).last().reset_index()
+                filtered_farmgate = filtered_farmgate.dropna(subset=['Date'])
+                latest_farmgate_prices = filtered_farmgate.sort_values('Date').groupby(['Régions Name', 'commodity_id']).last().reset_index()
                 if selected_commodity_ids:
                     latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_id'].isin(selected_commodity_ids)]
                 markets_gdf = gpd.read_file(st.session_state.file_paths['markets']) if markets else gpd.GeoDataFrame()
-                latest_farmgate_prices = calculate_nearest_farmgate_distance(latest_farmgate_prices, markets_gdf)
+                latest_farmgate_prices = calculate_nearest_market_distance(latest_farmgate_prices, markets_gdf)
                 if len(latest_farmgate_prices) > 500:
                     latest_farmgate_prices = latest_farmgate_prices.head(500)
-                    st.warning("Limited to 500 farmgate prices for performance.")
+                    st.warning("Limited to 500 farmgate price markers for performance.")
             if not retail_df.empty:
                 filtered_retail = retail_df[retail_df['Year'] == selected_year] if selected_year else retail_df
                 if selected_month:
                     filtered_retail = filtered_retail[filtered_retail['Month'] == selected_month]
-                filtered_retail['Date'] = pd.to_datetime(filtered_retail[['Year', 'Month']].assign(day=1), errors=['coerce'])
-                filtered_retail = filtered_retail.dropna(subset=['Date']).dropna()
-                latest_retail_prices = filtered_retail.sort_values('Date']).groupby(['market', 'commodity_id']).last().reset_index()
-                if latest_retail['index'].duplicated().any():
-                    st.warning("Duplicated indices in retail prices. Removing duplicates.")
+                filtered_retail['Date'] = pd.to_datetime(filtered_retail[['Year', 'Month']].assign(day=1), errors='coerce')
+                filtered_retail = filtered_retail.dropna(subset=['Date'])
+                latest_retail_prices = filtered_retail.sort_values('Date').groupby(['market', 'commodity_id']).last().reset_index()
+                if latest_retail_prices.index.duplicated().any():
+                    st.warning("Duplicate indices in retail prices. Removing duplicates.")
                     latest_retail_prices = latest_retail_prices.drop_duplicates().reset_index(drop=True)
                 if selected_commodity_ids:
                     latest_retail_prices = latest_retail_prices[latest_retail_prices['commodity_id'].isin(selected_commodity_ids)]
                 if len(latest_retail_prices) > 500:
+                    latest_retail_prices = latest_retail_prices.head(500)
                     st.warning("Limited to 500 retail price markers for performance.")
-                    st.warning("Limited to error500 retail prices markers.")
             st.session_state.latest_farmgate_prices = latest_farmgate_prices
             st.session_state.latest_retail_prices = latest_retail_prices
-            st.session_state.map_data_updated'] = False
+            st.session_state['map_data_updated'] = False
             st.session_state.map_render_key += 1
 
         # Render Map
@@ -451,7 +451,7 @@ def main():
                         zoom_start=6,
                         tiles="CartoDB Positron"
                     )
-                    folium.FitBounds([[12.3, -17], [16.7], [-11]]).add_to(m)
+                    folium.FitBounds([[12.3, -17], [16.7, -11]]).add_to(m)
 
                     # Add Roads Layer
                     if show_roads and roads_filtered:
@@ -483,13 +483,12 @@ def main():
                     # Add Farmgate Prices Layer
                     if show_farmgate and not st.session_state.latest_farmgate_prices.empty:
                         farmgate_cluster = MarkerCluster(name="Farmgate Prices").add_to(m)
-                        valid_farmgate_markers = farmgate_markers
-                        valid_farmgate = 0
+                        valid_farmgate_markers = 0
                         for _, row in st.session_state.latest_farmgate_prices.iterrows():
                             if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
                                 continue
-                            distance_text = f"<b>Distance to Nearest Market: {row['Distance_to_Nearest_Market_km']:.2f} km<br>{}</b>" if not pd.isna(row.get('Distance_to_Nearest_Market_km')) else ""
-                            popup_text = f"<b>Region: {row['Régions Name']}<br><b>Commodity: {row['commodity_english']}<br><b>Price: {row['Price']:.2f} {row['Unit2']}<br>{distance_text}<b>Date: {row['Year']}-{row['Month']:02d}"
+                            distance_text = f"<b>Distance to Nearest Market:</b> {row['Distance_to_Nearest_Market_km']:.2f} km<br>" if not pd.isna(row.get('Distance_to_Nearest_Market_km')) else ""
+                            popup_text = f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br>{distance_text}<b>Date:</b> {row['Year']}-{row['Month']:02d}"
                             folium.Marker(
                                 location=[row['Régions - Latitude'], row['Régions - Longitude']],
                                 popup=folium.Popup(popup_text, max_width=250),
@@ -502,20 +501,19 @@ def main():
                     # Add Retail Prices Layer
                     if show_retail and not st.session_state.latest_retail_prices.empty:
                         retail_cluster = MarkerCluster(name="Retail Prices").add_to(m)
-                        valid_retail_markers = retail_markers
-                        valid_retail = 0
+                        valid_retail_markers = 0
                         for _, row in st.session_state.latest_retail_prices.iterrows():
                             if pd.isna(row['latitude']) or pd.isna(row['longitude']):
                                 continue
-                            popup_text = f"<b>Market: {row['market']}<br><b>Commodity: {row['commodity']}<br><b>Price: {row['Price']:.2f} {row['Unit2']}<br><b>Date: {row['Year']}-{row['Month']:02d}"
+                            popup_text = f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"
                             folium.Marker(
                                 location=[row['latitude'], row['longitude']],
                                 popup=folium.Popup(popup_text, max_width=250),
-                                icon=folium.Icon(color=['purple', 'shopping-retail', icon='shopping-basket', prefix='fa')
+                                icon=folium.Icon(color='purple', icon='shopping-basket', prefix='fa')
                             ).add_to(retail_cluster)
                             valid_retail_markers += 1
                         if valid_retail_markers == 0:
-                            st.warning("No valid retail price locations found for the selected time.")
+                            st.warning("No valid retail price locations found for the selected filters.")
 
                     # Add Raster Overlays
                     if show_travel:
@@ -542,7 +540,7 @@ def main():
                     Fullscreen(position='topright', title='Expand', title_cancel='Exit').add_to(m)
 
                     folium.LayerControl(collapsed=False).add_to(m)
-                    st_folium(m, use_container_width=True, height=st.session_state['map_height'], key=f"folium_map_{st.session_state.map_render_key}}")
+                    st_folium(m, use_container_width=True, height=st.session_state['map_height'], key=f"folium_map_{st.session_state.map_render_key}")
 
                     # Add Dynamic Legends
                     if show_travel or show_friction:
@@ -553,7 +551,6 @@ def main():
                         if show_friction:
                             with col2:
                                 st.markdown(generate_legend_html(friction_breaks, friction_colors, "Friction (min/m)"), unsafe_allow_html=True)
-
                 except Exception as e:
                     st.error(f"Map rendering failed: {str(e)}. Please check data files or coordinates.")
                 finally:
@@ -611,8 +608,8 @@ def main():
                         retail_trend[['Date', 'Price']],
                         on='Date',
                         how='inner',
-                        suffixes=['_farmgate', 'retail']
-                        )
+                        suffixes=('_farmgate', '_retail')
+                    )
                     margin_trend['Price'] = margin_trend['Price_retail'] - margin_trend['Price_farmgate']
                     margin_trend['Price Type'] = 'Gross Margin'
                     margin_trend = margin_trend[['Date', 'Price', 'Price Type']].dropna(subset=['Price'])
@@ -648,7 +645,7 @@ def main():
                     if show_gross_margin and 'Gross Margin' in combined_trend['Price Type'].values:
                         fig.add_trace(go.Scatter(
                             x=combined_trend[combined_trend['Price Type'] == 'Gross Margin']['Date'],
-                            y=[combined_trend[combined_trend['Price Type'] == 'Gross Margin']['Price'],
+                            y=combined_trend[combined_trend['Price Type'] == 'Gross Margin']['Price'],
                             mode='lines+markers',
                             name='Gross Margin',
                             line=dict(color='#d62728', width=2, dash='dash'),
