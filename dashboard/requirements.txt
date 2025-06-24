@@ -8,3 +8,4 @@ streamlit-folium
 branca
 plotly
 geopy
+openpyxl
