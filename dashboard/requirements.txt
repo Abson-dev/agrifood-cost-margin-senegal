@@ -11,3 +11,4 @@ geopy
 xgboost 
 prophet 
 scikit-learn
+sklearn.preprocessing
