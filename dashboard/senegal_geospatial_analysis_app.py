@@ -27,7 +27,7 @@ DEFAULT_FILES = {
     'markets': os.path.join(BASE_DIR, 'markets_from_excel.geojson'),
     'roads': os.path.join(BASE_DIR, 'roads_filtered.geojson'),
     'prices': os.path.join(BASE_DIR, 'merged_farmgate_retail_prices_senegal.xlsx'),
-    'population': os.path.join(BASE_DIR, 'sen_ppp_2020_UNadj.tiff')
+    'population': os.path.join(BASE_DIR, 'sen_ppp_2020_UNadj.tif')
 }
 
 # Initialize session state
