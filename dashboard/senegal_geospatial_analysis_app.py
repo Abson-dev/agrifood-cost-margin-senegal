@@ -486,7 +486,7 @@ def main():
                 filtered_farmgate = filtered_farmgate.dropna(subset=['Date'])
                 latest_farmgate_prices = filtered_farmgate.sort_values('Date').groupby(['Régions Name', 'commodity_id']).last().reset_index()
                 if selected_commodity_ids:
-                    latest_farmgate_prices = latest_farmgate_prices[lates_farmgate_prices['commodity_id'].isin(selected_commodity_ids)]
+                    latest_farmgate_prices = latest_farmgate_prices[latest_farmgate_prices['commodity_id'].isin(selected_commodity_ids)]
                 markets_gdf = gpd.read_file(st.session_state.file_paths['markets']) if markets else gpd.GeoDataFrame()
                 latest_farmgate_prices = calculate_nearest_market_distance(latest_farmgate_prices, markets_gdf)
                 if len(latest_farmgate_prices) > 500:
@@ -504,10 +504,10 @@ def main():
                 if len(latest_retail_prices) > 500:
                     latest_retail_prices = latest_retail_prices.head(500)
                     st.warning("Limited to 500 retail price markers for performance.")
-            st.session_state['latest_farmgate_prices'] = latest_farmgate_prices
-            st.session_state['latest_retail_prices'] = latest_retail_prices
+            st.session_state.latest_farmgate_prices = latest_farmgate_prices
+            st.session_state.latest_retail_prices = latest_retail_prices
             st.session_state['map_data_updated'] = False
-            st.session_state['map_render_key'] += 1
+            st.session_state.map_render_key += 1
 
         # Render Map
         map_placeholder = st.empty()
@@ -548,11 +548,11 @@ def main():
                         else:
                             market_group.add_to(m)
 
-                    if show_farmgate and not st.session_state['latest_farmgate_prices'].empty:
+                    if show_farmgate and not st.session_state.latest_farmgate_prices.empty:
                         farmgate_data = [
                             [row['Régions - Latitude'], row['Régions - Longitude'], 
                              f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Distance to Nearest Market:</b> {row['Distance_to_Nearest_Market_km']:.2f} km<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"]
-                            for _, row in st.session_state['latest_farmgate_prices'].iterrows()
+                            for _, row in st.session_state.latest_farmgate_prices.iterrows()
                             if not pd.isna(row['Régions - Latitude']) and not pd.isna(row['Régions - Longitude'])
                         ]
                         FastMarkerCluster(
@@ -561,17 +561,17 @@ def main():
                             callback="function(row) {return L.marker([row[0], row[1]], {icon: L.AwesomeMarkers.icon({icon: 'tractor', prefix: 'fa', markerColor: 'green'})}).bindPopup(row[2]);}"
                         ).add_to(m)
 
-                    if show_retail and not st.session_state['latest_retail_prices'].empty:
+                    if show_retail and not st.session_state.latest_retail_prices.empty:
                         retail_data = [
                             [row['latitude'], row['longitude'], 
                              f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"]
-                            for _, row in st.session_state['latest_retail_prices'].iterrows()
+                            for _, row in st.session_state.latest_retail_prices.iterrows()
                             if not pd.isna(row['latitude']) and not pd.isna(row['longitude'])
                         ]
                         FastMarkerCluster(
                             data=retail_data,
                             name="Retail Prices",
-                            callback="function(row) {return L.marker([row[0], row[1]], {icon: L.AwesomeMarkers.icon({icon: 'shopping-basket', prefix: 'fa', markerColor: 'purple'})}).add_to(row[2]);}"
+                            callback="function(row) {return L.marker([row[0], row[1]], {icon: L.AwesomeMarkers.icon({icon: 'shopping-basket', prefix: 'fa', markerColor: 'purple'})}).bindPopup(row[2]);}"
                         ).add_to(m)
 
                     if show_travel:
@@ -628,36 +628,38 @@ def main():
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Markets", len(markets['features']) if markets else 0)
         col2.metric("Road Features", len(roads_filtered['features']) if roads_filtered else 0)
-        col3.metric("Price Points", len(st.session_state['latest_farmgate_prices']) + len(st.session_state['latest_retail_prices']))
-        avg_distance = st.session_state['latest_farmgate_prices']['Distance_to_Nearest_Market_km'].mean() if not st.session_state['latest_farmgate_prices'].empty and 'Distance_to_Nearest_Market_km' in st.session_state['latest_farmgate_prices'].columns else np.nan
+        col3.metric("Price Points", len(st.session_state.latest_farmgate_prices) + len(st.session_state.latest_retail_prices))
+        avg_distance = st.session_state.latest_farmgate_prices['Distance_to_Nearest_Market_km'].mean() if not st.session_state.latest_farmgate_prices.empty and 'Distance_to_Nearest_Market_km' in st.session_state.latest_farmgate_prices.columns else np.nan
         col4.metric("Avg Distance to Market (km)", f"{avg_distance:.2f}" if not pd.isna(avg_distance) else "N/A")
 
         st.markdown("### Raw Data Preview")
-        if not st.session_state['latest_farmgate_prices'].empty:
+        if not st.session_state.latest_farmgate_prices.empty:
             st.markdown("#### Farmgate Prices")
             st.dataframe(
-                st.session_state['latest_farmgate_prices'][['Régions Name', 'commodity_english', 'Price', 'Unit2', 'Distance_to_Nearest_Market_km', 'Year', 'Month']],
+                st.session_state.latest_farmgate_prices[['Régions Name', 'commodity_english', 'Price', 'Unit2', 'Distance_to_Nearest_Market_km', 'Year', 'Month']],
                 use_container_width=True,
                 height=300
             )
             st.download_button(
                 label="Download Farmgate Prices",
-                data=st.session_state['latest_farmgate_prices'].to_csv(index=False),
+                data=st.session_state.latest_farmgate_prices.to_csv(index=False),
                 file_name=f"farmgate_prices_{selected_year}_{selected_month}.csv",
-                mime="text/csv"
+                mime="text/csv",
+                key="download_farmgate"
             )
-        if not st.session_state['latest_retail_prices'].empty:
+        if not st.session_state.latest_retail_prices.empty:
             st.markdown("#### Retail Prices")
             st.dataframe(
-                st.session_state['latest_retail_prices'][['market', 'commodity', 'Price', 'Unit2', 'Year', 'Month']],
+                st.session_state.latest_retail_prices[['market', 'commodity', 'Price', 'Unit2', 'Year', 'Month']],
                 use_container_width=True,
                 height=300
             )
             st.download_button(
                 label="Download Retail Prices",
-                data=st.session_state['latest_retail_prices'].to_csv(index=False),
+                data=st.session_state.latest_retail_prices.to_csv(index=False),
                 file_name=f"retail_prices_{selected_year}_{selected_month}.csv",
-                mime="text/csv"
+                mime="text/csv",
+                key="download_retail"
             )
 
         if st.session_state['errors']:
@@ -695,69 +697,69 @@ def main():
                 else:
                     retail_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
 
-            if show_gross_margin and not farmgate_trend.empty and not retail_trend.empty:
-                margin_trend = pd.merge(
-                    farmgate_trend[['Date', 'Price']],
-                    retail_trend[['Date', 'Price']],
-                    on='Date',
-                    how='inner',
-                    suffixes=('_farmgate', '_retail')
-                )
-                margin_trend['Price'] = margin_trend['Price_retail'] - margin_trend['Price_farmgate']
-                margin_trend['Price Type'] = 'Gross Margin'
-                margin_trend = margin_trend[['Date', 'Price', 'Price Type']].dropna(subset=['Price'])
-            else:
-                margin_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
+                if show_gross_margin and not farmgate_trend.empty and not retail_trend.empty:
+                    margin_trend = pd.merge(
+                        farmgate_trend[['Date', 'Price']],
+                        retail_trend[['Date', 'Price']],
+                        on='Date',
+                        how='inner',
+                        suffixes=('_farmgate', '_retail')
+                    )
+                    margin_trend['Price'] = margin_trend['Price_retail'] - margin_trend['Price_farmgate']
+                    margin_trend['Price Type'] = 'Gross Margin'
+                    margin_trend = margin_trend[['Date', 'Price', 'Price Type']].dropna(subset=['Price'])
+                else:
+                    margin_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
 
-            combined_trend = pd.concat([farmgate_trend, retail_trend, margin_trend], ignore_index=True)
-            if combined_trend.empty:
-                st.warning("No trend data available for {0}".format(commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)))
-            else:
-                fig = go.Figure()
-                if 'Farmgate' in combined_trend['Price Type'].values:
-                    fig.add_trace(go.Scatter(
-                        x=combined_trend[combined_trend['Price Type'] == 'Farmgate']['Date'],
-                        y=combined_trend[combined_trend['Price Type'] == 'Farmgate']['Price'],
-                        mode='lines+markers',
-                        name='Farmgate',
-                        line=dict(color='#2ca02c', width=2),
-                        marker=dict(size=6),
-                        hovertemplate='%{x|%b %Y}<br>Price: %{y:.2f} XOF/KG<br>Type: Farmgate'
-                    ))
-                if 'Retail' in combined_trend['Price Type'].values:
-                    fig.add_trace(go.Scatter(
-                        x=combined_trend[combined_trend['Price Type'] == 'Retail']['Date'],
-                        y=combined_trend[combined_trend['Price Type'] == 'Retail']['Price'],
-                        mode='lines+markers',
-                        name='Retail',
-                        line=dict(color='#9467bd', width=2),
-                        marker=dict(size=6),
-                        hovertemplate='Price: %{x|%b %Y}<br>%{y:.2f} XOF/KG<br>Type: Retail'
-                    ))
-                if show_gross_margin and 'Gross Margin' in combined_trend['Price Type'].values:
-                    fig.add_trace(go.Scatter(
-                        x=combined_trend[combined_trend['Price Type'] == 'Gross Margin']['Date'],
-                        y=combined_trend[combined_trend['Price Type'] == 'Gross Margin']['Price'],
-                        mode='lines+markers',
-                        name='Gross Margin',
-                        line=dict(color='#d62728', width=2, dash='dash'),
-                        marker=dict(size=6),
-                        hovertemplate='Margin: %{x|%b %Y}<br>%{y:.2f} XOF/KG<br>Type: Gross Margin'
-                    ))
+                combined_trend = pd.concat([farmgate_trend, retail_trend, margin_trend], ignore_index=True)
+                if combined_trend.empty:
+                    st.warning(f"No trend data available for {commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)}.")
+                else:
+                    fig = go.Figure()
+                    if 'Farmgate' in combined_trend['Price Type'].values:
+                        fig.add_trace(go.Scatter(
+                            x=combined_trend[combined_trend['Price Type'] == 'Farmgate']['Date'],
+                            y=combined_trend[combined_trend['Price Type'] == 'Farmgate']['Price'],
+                            mode='lines+markers',
+                            name='Farmgate',
+                            line=dict(color='#2ca02c', width=2),
+                            marker=dict(size=6),
+                            hovertemplate='%{x|%b %Y}<br>Price: %{y:.2f} XOF/KG<br>Type: Farmgate'
+                        ))
+                    if 'Retail' in combined_trend['Price Type'].values:
+                        fig.add_trace(go.Scatter(
+                            x=combined_trend[combined_trend['Price Type'] == 'Retail']['Date'],
+                            y=combined_trend[combined_trend['Price Type'] == 'Retail']['Price'],
+                            mode='lines+markers',
+                            name='Retail',
+                            line=dict(color='#9467bd', width=2),
+                            marker=dict(size=6),
+                            hovertemplate='%{x|%b %Y}<br>Price: %{y:.2f} XOF/KG<br>Type: Retail'
+                        ))
+                    if show_gross_margin and 'Gross Margin' in combined_trend['Price Type'].values:
+                        fig.add_trace(go.Scatter(
+                            x=combined_trend[combined_trend['Price Type'] == 'Gross Margin']['Date'],
+                            y=combined_trend[combined_trend['Price Type'] == 'Gross Margin']['Price'],
+                            mode='lines+markers',
+                            name='Gross Margin',
+                            line=dict(color='#d62728', width=2, dash='dash'),
+                            marker=dict(size=6),
+                            hovertemplate='%{x|%b %Y}<br>Margin: %{y:.2f} XOF/KG<br>Type: Gross Margin'
+                        ))
 
-                fig.update_layout(
-                    title=f"{commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)} Price and Margin Trends",
-                    title_x=0.5,
-                    xaxis_title="Date",
-                    yaxis_title="Average Price/Margin (XOF/KG)",
-                    font=dict(family="Roboto", size=12),
-                    hovermode="x unified",
-                    showlegend=True,
-                    template="plotly_white",
-                    xaxis=dict(showgrid=True, gridcolor='rgba(200,200,200,0.2)'),
-                    yaxis=dict(showgrid=True, gridcolor='rgba(200,200,200,0.2)')
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                    fig.update_layout(
+                        title=f"{commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)} Price and Margin Trends",
+                        title_x=0.5,
+                        xaxis_title="Date",
+                        yaxis_title="Average Price/Margin (XOF/KG)",
+                        font=dict(family="Roboto, sans-serif", size=12),
+                        hovermode="x unified",
+                        showlegend=True,
+                        template="plotly_white",
+                        xaxis=dict(showgrid=True, gridcolor='rgba(200,200,200,0.2)'),
+                        yaxis=dict(showgrid=True, gridcolor='rgba(200,200,200,0.2)')
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
             except Exception as e:
                 log_error(f"Failed to generate price trends: {e}")
         else:
