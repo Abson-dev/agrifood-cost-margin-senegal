@@ -42,6 +42,8 @@ if 'latest_farmgate_prices' not in st.session_state:
     st.session_state['latest_farmgate_prices'] = pd.DataFrame()
 if 'latest_retail_prices' not in st.session_state:
     st.session_state['latest_retail_prices'] = pd.DataFrame()
+if 'latest_merged_prices' not in st.session_state:
+    st.session_state['latest_merged_prices'] = pd.DataFrame()
 if 'file_paths' not in st.session_state:
     st.session_state['file_paths'] = DEFAULT_FILES.copy()
 if 'map_render_key' not in st.session_state:
@@ -55,7 +57,7 @@ if 'errors' not in st.session_state:
 if 'temp_files' not in st.session_state:
     st.session_state['temp_files'] = []
 if 'show_legends' not in st.session_state:
-    st.session_state['show_legends'] = True  # Default to showing legends
+    st.session_state['show_legends'] = True
 
 # -------------------------------
 # Helper Functions
@@ -265,6 +267,35 @@ def load_retail_data(file_path):
         log_error(f"Error reading retail prices file {file_path}: {e}")
         return pd.DataFrame()
 
+@st.cache_data
+def load_merged_data(file_path):
+    try:
+        merged_df = pd.read_excel(file_path, sheet_name='merged_data')
+        if merged_df.empty:
+            st.warning("Merged data Excel sheet is empty")
+            return pd.DataFrame()
+        required_columns = ['date', 'market', 'market_id', 'latitude', 'longitude', 'commodity_retail', 'commodity_id',
+                           'price_retail', 'unit2_retail', 'year', 'month', 'commodity_farmgate', 'region_name',
+                           'region_latitude', 'region_longitude', 'price_farmgate', 'unit2_farmgate', 'commodity_english',
+                           'gross_margin', 'distance_km']
+        missing_cols = [col for col in required_columns if col not in merged_df.columns]
+        if missing_cols:
+            st.warning(f"Missing columns in merged data: {', '.join(missing_cols)}. Using available data.")
+        merged_df['price_retail'] = pd.to_numeric(merged_df['price_retail'], errors='coerce')
+        merged_df['price_farmgate'] = pd.to_numeric(merged_df['price_farmgate'], errors='coerce')
+        merged_df['gross_margin'] = pd.to_numeric(merged_df['gross_margin'], errors='coerce')
+        merged_df['distance_km'] = pd.to_numeric(merged_df['distance_km'], errors='coerce')
+        merged_df['year'] = pd.to_numeric(merged_df['year'], errors='coerce')
+        merged_df['month'] = pd.to_numeric(merged_df['month'], errors='coerce')
+        merged_df = merged_df.dropna(subset=['price_retail', 'price_farmgate', 'latitude', 'longitude', 'region_latitude', 'region_longitude', 'commodity_id', 'year', 'month'])
+        if not merged_df.empty and (merged_df['year'] < 2016).any() or (merged_df['year'] > 2025).any():
+            st.warning("Merged data contains years outside 2016–2025. Filtering.")
+            merged_df = merged_df[merged_df['year'].between(2016, 2025)]
+        return merged_df
+    except Exception as e:
+        log_error(f"Error reading merged data file {file_path}: {e}")
+        return pd.DataFrame()
+
 # -------------------------------
 # Raster Image Generation
 # -------------------------------
@@ -362,7 +393,7 @@ def main():
     st.markdown("""
     ### Welcome to the Senegal Agricultural Market Dashboard
     This interactive tool visualizes travel time, friction surfaces, market locations, road networks, commodity prices, and population density across Senegal. 
-    Use the filters to explore data and download insights for policy-making.
+    Compare retail prices at specific markets with farmgate prices in production regions.
     """)
 
     # File Upload Section
@@ -417,10 +448,12 @@ def main():
     # Load price data
     prices_df = load_price_data(st.session_state.file_paths['prices'])
     retail_df = load_retail_data(st.session_state.file_paths['prices'])
+    merged_df = load_merged_data(st.session_state.file_paths['prices'])
     
     commodity_map = pd.concat([
         prices_df[['commodity_id', 'commodity_english']].drop_duplicates() if not prices_df.empty else pd.DataFrame(),
-        retail_df[['commodity_id', 'commodity']].drop_duplicates().rename(columns={'commodity': 'commodity_english'}) if not retail_df.empty else pd.DataFrame()
+        retail_df[['commodity_id', 'commodity']].drop_duplicates().rename(columns={'commodity': 'commodity_english'}) if not retail_df.empty else pd.DataFrame(),
+        merged_df[['commodity_id', 'commodity_english']].drop_duplicates() if not merged_df.empty else pd.DataFrame()
     ]).drop_duplicates(subset='commodity_id').set_index('commodity_id')['commodity_english'].to_dict()
     st.session_state.commodity_map = commodity_map
 
@@ -435,7 +468,7 @@ def main():
 
     with tab1:
         st.subheader("Interactive Map")
-        st.markdown("Explore travel time, friction surfaces, market locations, road networks, commodity prices, and population density.")
+        st.markdown("Explore travel time, friction surfaces, market locations, road networks, commodity prices, and population density. Compare retail and farmgate prices for selected markets and commodities.")
         st.info("Map view is fixed. Pan or zoom to explore all data. Roads layer may load slowly due to data complexity.")
 
         # Filter controls
@@ -446,7 +479,7 @@ def main():
 
         month_names = {1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
                        7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"}
-        available_months = sorted(list(set(prices_df['Month'].unique()) | set(retail_df['Month'].unique()))) if not prices_df.empty or not retail_df.empty else list(range(1, 13))
+        available_months = sorted(list(set(prices_df['Month'].unique()) | set(retail_df['Month'].unique()) | set(merged_df['month'].unique()))) if not prices_df.empty or not retail_df.empty or not merged_df.empty else list(range(1, 13))
         latest_month = max(available_months) if available_months else 12
         selected_month_name = st.sidebar.selectbox("Select Month", [month_names.get(m, str(m)) for m in available_months], index=available_months.index(latest_month) if latest_month in available_months else 0, key="month_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
         selected_month = next((k for k, v in month_names.items() if v == selected_month_name), selected_month_name)
@@ -460,6 +493,16 @@ def main():
             on_change=lambda: st.session_state.update({'map_data_updated': True})
         )
 
+        # Market filter
+        available_markets = sorted(merged_df['market'].unique()) if not merged_df.empty else []
+        selected_market = st.sidebar.selectbox(
+            "Select Market for Price Comparison",
+            options=["All"] + available_markets,
+            index=0,
+            key="market_select",
+            on_change=lambda: st.session_state.update({'map_data_updated': True})
+        )
+
         # Layer toggles
         st.sidebar.header("Map Layers")
         show_travel = st.sidebar.checkbox("Travel Time", value=False)
@@ -469,15 +512,17 @@ def main():
         show_farmgate = st.sidebar.checkbox("Farmgate Prices", value=False)
         show_retail = st.sidebar.checkbox("Retail Prices", value=False)
         show_population = st.sidebar.checkbox("Population", value=True)
+        show_merged = st.sidebar.checkbox("Merged Retail-Farmgate Comparison", value=True)
 
         st.sidebar.slider("Map Height (px)", 400, 1000, st.session_state['map_height'], key="map_height")
         st.sidebar.button("Clear Temporary Files", on_click=cleanup_temp_files)
         st.session_state['show_legends'] = st.sidebar.checkbox("Show Legends", value=st.session_state['show_legends'])
 
         # Update map data
-        if st.session_state.map_data_updated or st.session_state.latest_farmgate_prices.empty or st.session_state.latest_retail_prices.empty:
+        if st.session_state.map_data_updated or st.session_state.latest_farmgate_prices.empty or st.session_state.latest_retail_prices.empty or st.session_state.latest_merged_prices.empty:
             latest_farmgate_prices = pd.DataFrame()
             latest_retail_prices = pd.DataFrame()
+            latest_merged_prices = pd.DataFrame()
             if not prices_df.empty:
                 filtered_farmgate = prices_df[prices_df['Year'] == selected_year] if selected_year else prices_df
                 if selected_month:
@@ -504,8 +549,23 @@ def main():
                 if len(latest_retail_prices) > 500:
                     latest_retail_prices = latest_retail_prices.head(500)
                     st.warning("Limited to 500 retail price markers for performance.")
+            if not merged_df.empty:
+                filtered_merged = merged_df[merged_df['year'] == selected_year] if selected_year else merged_df
+                if selected_month:
+                    filtered_merged = filtered_merged[filtered_merged['month'] == selected_month]
+                if selected_commodity_ids:
+                    filtered_merged = filtered_merged[filtered_merged['commodity_id'].isin(selected_commodity_ids)]
+                if selected_market != "All":
+                    filtered_merged = filtered_merged[filtered_merged['market'] == selected_market]
+                filtered_merged['date'] = pd.to_datetime(filtered_merged[['year', 'month']].assign(day=1), errors='coerce')
+                filtered_merged = filtered_merged.dropna(subset=['date'])
+                latest_merged_prices = filtered_merged.sort_values('date').groupby(['market', 'region_name', 'commodity_id']).last().reset_index()
+                if len(latest_merged_prices) > 500:
+                    latest_merged_prices = latest_merged_prices.head(500)
+                    st.warning("Limited to 500 merged price markers for performance.")
             st.session_state.latest_farmgate_prices = latest_farmgate_prices
             st.session_state.latest_retail_prices = latest_retail_prices
+            st.session_state.latest_merged_prices = latest_merged_prices
             st.session_state['map_data_updated'] = False
             st.session_state.map_render_key += 1
 
@@ -574,6 +634,32 @@ def main():
                             callback="function(row) {return L.marker([row[0], row[1]], {icon: L.AwesomeMarkers.icon({icon: 'shopping-basket', prefix: 'fa', markerColor: 'purple'})}).bindPopup(row[2]);}"
                         ).add_to(m)
 
+                    if show_merged and not st.session_state.latest_merged_prices.empty:
+                        retail_merged_data = [
+                            [row['latitude'], row['longitude'],
+                             f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity_retail']}<br><b>Retail Price:</b> {row['price_retail']:.2f} {row['unit2_retail']}<br><b>Date:</b> {row['year']}-{row['month']:02d}"]
+                            for _, row in st.session_state.latest_merged_prices.drop_duplicates(subset=['market', 'commodity_id']).iterrows()
+                            if not pd.isna(row['latitude']) and not pd.isna(row['longitude'])
+                        ]
+                        farmgate_merged_data = [
+                            [row['region_latitude'], row['region_longitude'],
+                             f"<b>Region:</b> {row['region_name']}<br><b>Commodity:</b> {row['commodity_farmgate']}<br><b>Farmgate Price:</b> {row['price_farmgate']:.2f} {row['unit2_farmgate']}<br><b>Retail Market:</b> {row['market']}<br><b>Retail Price:</b> {row['price_retail']:.2f} {row['unit2_retail']}<br><b>Gross Margin:</b> {row['gross_margin']:.2f} XOF/KG<br><b>Distance:</b> {row['distance_km']:.2f} km<br><b>Date:</b> {row['year']}-{row['month']:02d}"]
+                            for _, row in st.session_state.latest_merged_prices.iterrows()
+                            if not pd.isna(row['region_latitude']) and not pd.isna(row['region_longitude'])
+                        ]
+                        if retail_merged_data:
+                            FastMarkerCluster(
+                                data=retail_merged_data,
+                                name="Merged Retail Prices",
+                                callback="function(row) {return L.marker([row[0], row[1]], {icon: L.AwesomeMarkers.icon({icon: 'shopping-basket', prefix: 'fa', markerColor: 'purple'})}).bindPopup(row[2]);}"
+                            ).add_to(m)
+                        if farmgate_merged_data:
+                            FastMarkerCluster(
+                                data=farmgate_merged_data,
+                                name="Merged Farmgate Prices",
+                                callback="function(row) {return L.marker([row[0], row[1]], {icon: L.AwesomeMarkers.icon({icon: 'tractor', prefix: 'fa', markerColor: 'green'})}).bindPopup(row[2]);}"
+                            ).add_to(m)
+
                     if show_travel:
                         folium.raster_layers.ImageOverlay(
                             name="Travel Time",
@@ -628,7 +714,7 @@ def main():
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Markets", len(markets['features']) if markets else 0)
         col2.metric("Road Features", len(roads_filtered['features']) if roads_filtered else 0)
-        col3.metric("Price Points", len(st.session_state.latest_farmgate_prices) + len(st.session_state.latest_retail_prices))
+        col3.metric("Price Points", len(st.session_state.latest_farmgate_prices) + len(st.session_state.latest_retail_prices) + len(st.session_state.latest_merged_prices))
         avg_distance = st.session_state.latest_farmgate_prices['Distance_to_Nearest_Market_km'].mean() if not st.session_state.latest_farmgate_prices.empty and 'Distance_to_Nearest_Market_km' in st.session_state.latest_farmgate_prices.columns else np.nan
         col4.metric("Avg Distance to Market (km)", f"{avg_distance:.2f}" if not pd.isna(avg_distance) else "N/A")
 
@@ -660,6 +746,20 @@ def main():
                 file_name=f"retail_prices_{selected_year}_{selected_month}.csv",
                 mime="text/csv",
                 key="download_retail"
+            )
+        if not st.session_state.latest_merged_prices.empty:
+            st.markdown("#### Merged Retail-Farmgate Prices")
+            st.dataframe(
+                st.session_state.latest_merged_prices[['market', 'commodity_retail', 'price_retail', 'unit2_retail', 'region_name', 'commodity_farmgate', 'price_farmgate', 'unit2_farmgate', 'gross_margin', 'distance_km', 'year', 'month']],
+                use_container_width=True,
+                height=300
+            )
+            st.download_button(
+                label="Download Merged Prices",
+                data=st.session_state.latest_merged_prices.to_csv(index=False),
+                file_name=f"merged_prices_{selected_year}_{selected_month}.csv",
+                mime="text/csv",
+                key="download_merged"
             )
 
         if st.session_state['errors']:
