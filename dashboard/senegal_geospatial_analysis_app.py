@@ -16,6 +16,8 @@ import uuid
 import tempfile
 import atexit
 from scipy.interpolate import interp1d
+from shapely.geometry import Point
+from rasterio.mask import mask
 
 # -------------------------------
 # Configuration: File Paths
@@ -125,9 +127,44 @@ def validate_commodity_overlap(farmgate_df, retail_df):
     if farmgate_df.empty or retail_df.empty:
         return set()
     common_ids = set(farmgate_df['commodity_id']).intersection(set(retail_df['commodity_id']))
-    if not common_ids:
-        st.error("No common commodity IDs found between farmgate and retail data.")
     return common_ids
+
+def compute_population_within_buffer(markets_gdf, population_file, buffer_size_km=5):
+    """
+    Compute population within a buffer_size_km radius around each market.
+    Returns a dictionary mapping market indices to population estimates.
+    """
+    if markets_gdf.empty:
+        return {}
+
+    # Determine UTM zone for Senegal (approx. Zone 28N for West Africa)
+    utm_crs = 'EPSG:32628'  # UTM Zone 28N
+    try:
+        # Reproject markets to UTM for accurate buffering
+        markets_utm = markets_gdf.to_crs(utm_crs)
+        # Create 5km buffers (buffer distance in meters)
+        markets_utm['geometry'] = markets_utm.geometry.buffer(buffer_size_km * 1000)
+        # Reproject buffers back to EPSG:4326 for raster clipping
+        markets_buffered = markets_utm.to_crs('EPSG:4326')
+
+        population_sums = {}
+        with rasterio.open(population_file) as src:
+            for idx, row in markets_buffered.iterrows():
+                geom = [row.geometry.__geo_interface__]
+                try:
+                    # Clip raster with buffer geometry
+                    out_image, _ = mask(src, geom, crop=True, nodata=src.nodata)
+                    # Mask nodata and sum valid population values
+                    out_image = np.ma.masked_equal(out_image, src.nodata)
+                    population_sum = np.nansum(out_image)
+                    population_sums[idx] = round(population_sum, 2) if not np.isnan(population_sum) else 0
+                except Exception as e:
+                    st.warning(f"Failed to compute population for market at index {idx}: {e}")
+                    population_sums[idx] = 0
+        return population_sums
+    except Exception as e:
+        st.error(f"Error computing population buffers: {e}")
+        return {}
 
 # -------------------------------
 # Load and Process Rasters
@@ -183,7 +220,6 @@ def generate_population_image(data, bounds):
         population_png_path = tmp.name
         Image.fromarray(rgb).save(population_png_path)
     atexit.register(cleanup_temp_files, population_png_path)
-    # Debug: Check data range and PNG creation
     st.write(f"Population data range: min={np.nanmin(data):.2f}, max={np.nanmax(data):.2f}")
     st.write(f"Population PNG created: {os.path.exists(population_png_path)}")
     return population_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]], breaks, colors
@@ -192,7 +228,7 @@ def generate_population_image(data, bounds):
 # Load GeoJSON Files
 # -------------------------------
 @st.cache_data
-def load_geojson(file_path, max_features=500, is_roads=False):
+def load_geojson(file_path, max_features=500, is_roads=False, population_file=None):
     try:
         gdf = gpd.read_file(file_path)
         if gdf.empty:
@@ -206,6 +242,12 @@ def load_geojson(file_path, max_features=500, is_roads=False):
         if len(gdf) > max_features:
             st.warning(f"GeoJSON file {file_path} has {len(gdf)} features. Limiting to {max_features}.")
             gdf = gdf.head(max_features)
+        
+        # Compute population for markets if population_file is provided
+        if not is_roads and population_file:
+            population_sums = compute_population_within_buffer(gdf, population_file)
+            gdf['population_5km'] = gdf.index.map(population_sums)
+        
         geojson_data = json.loads(gdf.to_json())
         st.info(f"Loaded {len(gdf)} features from {file_path}")
         return geojson_data if geojson_data['features'] else None
@@ -310,7 +352,7 @@ def main():
     st.sidebar.header("Data Sources")
     uploaded_files = {}
     for key, default_path in DEFAULT_FILES.items():
-        uploaded_file = st.sidebar.file_uploader(f"Upload {key.capitalize()} File", type=['tiff', 'geojson', 'xlsx'] if key == 'prices' else ['tiff'] if key in ['raster', 'friction', 'population'] else ['geojson'])
+        uploaded_file = st.sidebar.file_uploader(f"Upload {key.capitalize()} File", type=['tiff', 'tif'] if key in ['raster', 'friction', 'population'] else ['geojson', 'xlsx'])
         if uploaded_file:
             uploaded_path = os.path.join(BASE_DIR, uploaded_file.name)
             with open(uploaded_path, 'wb') as f:
@@ -337,7 +379,7 @@ def main():
         progress.progress(0.4)
         population_data, population_bounds = load_and_process_raster(st.session_state.file_paths['population'])
         progress.progress(0.6)
-        markets = load_geojson(st.session_state.file_paths['markets'])
+        markets = load_geojson(st.session_state.file_paths['markets'], population_file=st.session_state.file_paths['population'])
         progress.progress(0.8)
         roads_filtered = load_geojson(st.session_state.file_paths['roads'], max_features=500, is_roads=True)
         progress.progress(1.0)
@@ -346,7 +388,6 @@ def main():
         st.error("Failed to load raster data. Please check the files and try again.")
         return
 
-    # Debug: Check population data
     if population_data is not None:
         st.write(f"Population data loaded: shape={population_data.shape}, bounds={population_bounds}")
     else:
@@ -492,10 +533,12 @@ def main():
                         for feature in markets.get('features', []):
                             if feature['geometry']['type'] == 'Point' and all(isinstance(c, (int, float)) for c in feature['geometry']['coordinates']):
                                 coords = feature['geometry']['coordinates'][::-1]
-                                popup = feature['properties'].get('market', 'Unknown Market')
+                                market_name = feature['properties'].get('market', 'Unknown Market')
+                                population_5km = feature['properties'].get('population_5km', 0)
+                                popup_text = f"<b>Market:</b> {market_name}<br><b>Population (5km):</b> {population_5km:,.0f}"
                                 folium.Marker(
                                     location=coords,
-                                    popup=popup,
+                                    popup=folium.Popup(popup_text, max_width=250),
                                     icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
                                 ).add_to(market_group)
                                 valid_markers += 1
@@ -616,7 +659,6 @@ def main():
             )
             show_gross_margin = st.checkbox("Show Gross Margin (Retail - Farmgate)", value=True, key="show_gross_margin")
             try:
-                # Calculate farmgate trend
                 farmgate_trend = prices_df[prices_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if not farmgate_trend.empty:
                     farmgate_trend['Date'] = pd.to_datetime(farmgate_trend[['Year', 'Month']].assign(day=1), errors='coerce')
@@ -626,7 +668,6 @@ def main():
                 else:
                     farmgate_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
 
-                # Calculate retail trend
                 retail_trend = retail_df[retail_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if not retail_trend.empty:
                     retail_trend['Date'] = pd.to_datetime(retail_trend[['Year', 'Month']].assign(day=1), errors='coerce')
@@ -636,7 +677,6 @@ def main():
                 else:
                     retail_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
 
-                # Calculate gross margin
                 if show_gross_margin and not farmgate_trend.empty and not retail_trend.empty:
                     margin_trend = pd.merge(
                         farmgate_trend[['Date', 'Price']],
@@ -651,7 +691,6 @@ def main():
                 else:
                     margin_trend = pd.DataFrame(columns=['Date', 'Price', 'Price Type'])
 
-                # Combine trends
                 combined_trend = pd.concat([farmgate_trend, retail_trend, margin_trend], ignore_index=True)
                 if combined_trend.empty:
                     st.warning(f"No trend data available for {commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)}.")
@@ -690,9 +729,9 @@ def main():
 
                     fig.update_layout(
                         title=f"{commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)} Price and Margin Trends",
-                        title_x=0.5,  # Center the title
+                        title_x=0.5,
                         xaxis_title="Date",
-                        yaxis_title="Average Price/Margin (XOF/KG)",  # Updated Y-axis label
+                        yaxis_title="Average Price/Margin (XOF/KG)",
                         font=dict(family="Roboto, sans-serif", size=12),
                         hovermode="x unified",
                         showlegend=True,

@@ -11,3 +11,4 @@ geopy
 openpyxl
 geopandas 
 scipy
+shapely
