@@ -177,12 +177,15 @@ def generate_friction_image(data, bounds):
 @st.cache_data(hash_funcs={np.ma.MaskedArray: lambda x: hash((x.data.tobytes(), x.mask.tobytes()))})
 def generate_population_image(data, bounds):
     breaks = [0, 1, 10, 50, 100, 500, 1000, np.inf]
-    colors = [(255,255,255), (255,228,225), (253,190,190), (250,154,136), (240,59,32), (189,0,38), (128,0,38)]
+    colors = [(200, 220, 255), (150, 180, 255), (100, 140, 255), (50, 100, 255), (0, 60, 200), (0, 40, 150), (0, 20, 100)]
     rgb = generate_colors(data, breaks, colors)
     with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
         population_png_path = tmp.name
         Image.fromarray(rgb).save(population_png_path)
     atexit.register(cleanup_temp_files, population_png_path)
+    # Debug: Check data range and PNG creation
+    st.write(f"Population data range: min={np.nanmin(data):.2f}, max={np.nanmax(data):.2f}")
+    st.write(f"Population PNG created: {os.path.exists(population_png_path)}")
     return population_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]], breaks, colors
 
 # -------------------------------
@@ -343,6 +346,12 @@ def main():
         st.error("Failed to load raster data. Please check the files and try again.")
         return
 
+    # Debug: Check population data
+    if population_data is not None:
+        st.write(f"Population data loaded: shape={population_data.shape}, bounds={population_bounds}")
+    else:
+        st.error("Population data is None. Please check the file.")
+
     # Generate raster images
     travel_png_path, travel_image_bounds, travel_breaks, travel_colors = generate_travel_image(travel_time, travel_bounds)
     friction_png_path, friction_image_bounds, friction_breaks, friction_colors = generate_friction_image(friction_data, friction_bounds)
@@ -413,7 +422,7 @@ def main():
         show_markets = st.sidebar.checkbox("Markets", value=True)
         show_farmgate = st.sidebar.checkbox("Farmgate Prices", value=False)
         show_retail = st.sidebar.checkbox("Retail Prices", value=False)
-        show_population = st.sidebar.checkbox("Population", value=False)
+        show_population = st.sidebar.checkbox("Population", value=True)
 
         # Map height control
         st.sidebar.slider("Map Height (px)", 400, 1000, st.session_state['map_height'], key="map_height")
@@ -554,7 +563,7 @@ def main():
                             name="Population",
                             image=population_png_path,
                             bounds=population_image_bounds,
-                            opacity=0.6,
+                            opacity=0.8,
                             interactive=True,
                             cross_origin=False
                         ).add_to(m)
