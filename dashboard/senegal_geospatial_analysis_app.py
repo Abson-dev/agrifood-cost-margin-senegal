@@ -26,7 +26,8 @@ DEFAULT_FILES = {
     'friction': os.path.join(BASE_DIR, '201501_Global_Travel_Speed_Friction_Surface_SEN.tiff'),
     'markets': os.path.join(BASE_DIR, 'markets_from_excel.geojson'),
     'roads': os.path.join(BASE_DIR, 'roads_filtered.geojson'),
-    'prices': os.path.join(BASE_DIR, 'merged_farmgate_retail_prices_senegal.xlsx')
+    'prices': os.path.join(BASE_DIR, 'merged_farmgate_retail_prices_senegal.xlsx'),
+    'population': os.path.join(BASE_DIR, 'sen_ppp_2020_UNadj.tiff')
 }
 
 # Initialize session state
@@ -173,6 +174,17 @@ def generate_friction_image(data, bounds):
     atexit.register(cleanup_temp_files, friction_png_path)
     return friction_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]], friction_breaks, friction_colors
 
+@st.cache_data(hash_funcs={np.ma.MaskedArray: lambda x: hash((x.data.tobytes(), x.mask.tobytes()))})
+def generate_population_image(data, bounds):
+    breaks = [0, 1, 10, 50, 100, 500, 1000, np.inf]
+    colors = [(255,255,255), (255,228,225), (253,190,190), (250,154,136), (240,59,32), (189,0,38), (128,0,38)]
+    rgb = generate_colors(data, breaks, colors)
+    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+        population_png_path = tmp.name
+        Image.fromarray(rgb).save(population_png_path)
+    atexit.register(cleanup_temp_files, population_png_path)
+    return population_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]], breaks, colors
+
 # -------------------------------
 # Load GeoJSON Files
 # -------------------------------
@@ -287,7 +299,7 @@ def main():
     # Introduction
     st.markdown("""
     ### Welcome to the Senegal Agricultural Market Dashboard
-    This interactive tool visualizes travel time, friction surfaces, market locations, road networks, and commodity prices across Senegal. 
+    This interactive tool visualizes travel time, friction surfaces, market locations, road networks, commodity prices, and population density across Senegal. 
     Use the filters to explore data and download insights for policy-making.
     """)
 
@@ -295,7 +307,7 @@ def main():
     st.sidebar.header("Data Sources")
     uploaded_files = {}
     for key, default_path in DEFAULT_FILES.items():
-        uploaded_file = st.sidebar.file_uploader(f"Upload {key.capitalize()} File", type=['tiff', 'geojson', 'xlsx'] if key == 'prices' else ['tiff'] if key in ['raster', 'friction'] else ['geojson'])
+        uploaded_file = st.sidebar.file_uploader(f"Upload {key.capitalize()} File", type=['tiff', 'geojson', 'xlsx'] if key == 'prices' else ['tiff'] if key in ['raster', 'friction', 'population'] else ['geojson'])
         if uploaded_file:
             uploaded_path = os.path.join(BASE_DIR, uploaded_file.name)
             with open(uploaded_path, 'wb') as f:
@@ -320,25 +332,27 @@ def main():
         progress.progress(0.2)
         friction_data, friction_bounds = load_and_process_raster(st.session_state.file_paths['friction'])
         progress.progress(0.4)
-        markets = load_geojson(st.session_state.file_paths['markets'])
+        population_data, population_bounds = load_and_process_raster(st.session_state.file_paths['population'])
         progress.progress(0.6)
-        roads_filtered = load_geojson(st.session_state.file_paths['roads'], max_features=500, is_roads=True)
+        markets = load_geojson(st.session_state.file_paths['markets'])
         progress.progress(0.8)
-        prices_df = load_price_data(st.session_state.file_paths['prices'])
-        retail_df = load_retail_data(st.session_state.file_paths['prices'])
+        roads_filtered = load_geojson(st.session_state.file_paths['roads'], max_features=500, is_roads=True)
         progress.progress(1.0)
 
-    if travel_time is None or friction_data is None:
+    if travel_time is None or friction_data is None or population_data is None:
         st.error("Failed to load raster data. Please check the files and try again.")
         return
 
     # Generate raster images
     travel_png_path, travel_image_bounds, travel_breaks, travel_colors = generate_travel_image(travel_time, travel_bounds)
     friction_png_path, friction_image_bounds, friction_breaks, friction_colors = generate_friction_image(friction_data, friction_bounds)
+    population_png_path, population_image_bounds, population_breaks, population_colors = generate_population_image(population_data, population_bounds)
 
     # Validate price data columns
     farmgate_required_columns = ['Régions Name', 'Commodity', 'commodity_english', 'commodity_id', 'Price', 'Unit2', 'Régions - Latitude', 'Régions - Longitude', 'Year', 'Month']
     retail_required_columns = ['market', 'commodity', 'commodity_id', 'Price', 'Unit2', 'latitude', 'longitude', 'Year', 'Month']
+    prices_df = load_price_data(st.session_state.file_paths['prices'])
+    retail_df = load_retail_data(st.session_state.file_paths['prices'])
     if not prices_df.empty and any(col not in prices_df.columns for col in farmgate_required_columns):
         st.error(f"Missing columns in farmgate prices: {', '.join([col for col in farmgate_required_columns if col not in prices_df.columns])}")
         prices_df = pd.DataFrame()
@@ -367,7 +381,7 @@ def main():
 
     with tab1:
         st.subheader("Interactive Map")
-        st.markdown("Explore travel time, friction surfaces, market locations, road networks, and commodity prices.")
+        st.markdown("Explore travel time, friction surfaces, market locations, road networks, commodity prices, and population density.")
         st.info("Map view is fixed. Pan or zoom to explore all data. Roads layer may load slowly due to data complexity.")
 
         # Filter controls
@@ -399,6 +413,7 @@ def main():
         show_markets = st.sidebar.checkbox("Markets", value=True)
         show_farmgate = st.sidebar.checkbox("Farmgate Prices", value=False)
         show_retail = st.sidebar.checkbox("Retail Prices", value=False)
+        show_population = st.sidebar.checkbox("Population", value=False)
 
         # Map height control
         st.sidebar.slider("Map Height (px)", 400, 1000, st.session_state['map_height'], key="map_height")
@@ -534,6 +549,15 @@ def main():
                             interactive=True,
                             cross_origin=False
                         ).add_to(m)
+                    if show_population:
+                        folium.raster_layers.ImageOverlay(
+                            name="Population",
+                            image=population_png_path,
+                            bounds=population_image_bounds,
+                            opacity=0.6,
+                            interactive=True,
+                            cross_origin=False
+                        ).add_to(m)
 
                     # Add MiniMap and Fullscreen
                     MiniMap(tiles='OpenStreetMap', position='bottomleft', width=150, height=150).add_to(m)
@@ -543,7 +567,7 @@ def main():
                     st_folium(m, use_container_width=True, height=st.session_state['map_height'], key=f"folium_map_{st.session_state.map_render_key}")
 
                     # Add Dynamic Legends
-                    if show_travel or show_friction:
+                    if show_travel or show_friction or show_population:
                         col1, col2 = st.columns(2)
                         if show_travel:
                             with col1:
@@ -551,6 +575,8 @@ def main():
                         if show_friction:
                             with col2:
                                 st.markdown(generate_legend_html(friction_breaks, friction_colors, "Friction (min/m)"), unsafe_allow_html=True)
+                        if show_population:
+                            st.markdown(generate_legend_html(population_breaks, population_colors, "Population (people per pixel)"), unsafe_allow_html=True)
                 except Exception as e:
                     st.error(f"Map rendering failed: {str(e)}. Please check data files or coordinates.")
                 finally:
@@ -674,7 +700,7 @@ def main():
     # Footer
     st.markdown("""
     <div class="footer">
-        <p>Developed by xAI in collaboration with IFPRI | Data Sources: IFPRI, OpenStreetMap | © 2025</p>
+        <p>Developed by xAI in collaboration with IFPRI | Data Sources: IFPRI, OpenStreetMap, WorldPop | © 2025</p>
     </div>
     """, unsafe_allow_html=True)
 
