@@ -13,4 +13,4 @@ geopandas
 scipy
 shapely
 tensorflow
-sklearn
+scikit-learn
