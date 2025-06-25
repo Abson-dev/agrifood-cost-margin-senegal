@@ -589,7 +589,7 @@ def main():
                 data_missing = True
 
             # Render map only if no price data is missing for enabled price layers or if non-price layers are enabled
-            if not data_missing or (show_travel or show_friction or show_roads or show_markets or show_population):
+            if not data_missing or show_travel or show_friction or show_roads or show_markets or show_population:
                 with st.spinner("Rendering map..."):
                     try:
                         m = folium.Map(
