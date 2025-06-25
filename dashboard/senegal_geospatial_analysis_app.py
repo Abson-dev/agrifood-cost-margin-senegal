@@ -572,6 +572,18 @@ def main():
         # Render Map
         map_placeholder = st.empty()
         with map_placeholder.container():
+            # Check for empty data and display notifications
+            if show_farmgate and st.session_state.latest_farmgate_prices.empty:
+                selected_commodities = ", ".join([commodity_id_to_name.get(cid, str(cid)) for cid in selected_commodity_ids]) or "any commodity"
+                st.warning(f"No farmgate price data available for {selected_commodities} in {month_names.get(selected_month, selected_month)} {selected_year}.")
+            if show_retail and st.session_state.latest_retail_prices.empty:
+                selected_commodities = ", ".join([commodity_id_to_name.get(cid, str(cid)) for cid in selected_commodity_ids]) or "any commodity"
+                st.warning(f"No retail price data available for {selected_commodities} in {month_names.get(selected_month, selected_month)} {selected_year}.")
+            if show_merged and st.session_state.latest_merged_prices.empty:
+                selected_commodities = ", ".join([commodity_id_to_name.get(cid, str(cid)) for cid in selected_commodity_ids]) or "any commodity"
+                market_text = f"market {selected_market}" if selected_market != "All" else "any market"
+                st.warning(f"No merged retail-farmgate data available for {selected_commodities} in {market_text}, {month_names.get(selected_month, selected_month)} {selected_year}.")
+
             with st.spinner("Rendering map..."):
                 try:
                     m = folium.Map(
