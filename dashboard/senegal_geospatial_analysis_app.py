@@ -213,8 +213,8 @@ def load_and_process_raster(file_path, downsample_factor=2):
                 log_error(f"Raster {file_path} must have exactly one band.")
                 return None, None
             if src.crs is None:
-                crs = st.selectbox(f"Select CRS for {file_path}", ["EPSG:4326", "EPSG:32628"], key=f"crs_{file_path}")
-                src.crs = crs
+                log_error(f"No CRS found for {file_path}. Please specify CRS in main function.")
+                return None, None
             data = src.read(1, out_shape=(1, src.height // downsample_factor, src.width // downsample_factor), resampling=rasterio.enums.Resampling.bilinear)
             nodata = src.nodata
             bounds = (src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top)
@@ -258,18 +258,12 @@ def load_geojson(file_path, max_features=500, is_roads=False, population_file=No
         return None
 
 @st.cache_data
-def load_price_data(file_path):
+def load_price_data(df):
     try:
-        prices_df = pd.read_excel(file_path, sheet_name='Farmgate prices Senegal')
-        if prices_df.empty:
-            st.warning("Farmgate prices Excel is empty")
+        if df.empty:
+            st.warning("Farmgate prices data is empty")
             return pd.DataFrame()
-        farmgate_required_columns = ['Régions Name', 'Commodity', 'commodity_english', 'commodity_id', 'Price', 'Unit2', 'Régions - Latitude', 'Régions - Longitude', 'Year', 'Month']
-        missing_cols = [col for col in farmgate_required_columns if col not in prices_df.columns]
-        if missing_cols:
-            st.error(f"Missing columns in farmgate prices: {', '.join(missing_cols)}")
-            col_mapping = {col: st.selectbox(f"Map column for {col}", prices_df.columns, key=f"farmgate_{col}") for col in missing_cols}
-            prices_df = prices_df.rename(columns=col_mapping)
+        prices_df = df.copy()
         prices_df['Price'] = pd.to_numeric(prices_df['Price'], errors='coerce')
         prices_df['Year'] = pd.to_numeric(prices_df['Year'], errors='coerce')
         prices_df['Month'] = pd.to_numeric(prices_df['Month'], errors='coerce')
@@ -279,22 +273,16 @@ def load_price_data(file_path):
             prices_df = prices_df[prices_df['Year'].between(2016, 2025)]
         return prices_df
     except Exception as e:
-        log_error(f"Error reading farmgate prices file {file_path}: {e}")
+        log_error(f"Error processing farmgate prices data: {e}")
         return pd.DataFrame()
 
 @st.cache_data
-def load_retail_data(file_path):
+def load_retail_data(df):
     try:
-        retail_df = pd.read_excel(file_path, sheet_name='Retails Price Senegal')
-        if retail_df.empty:
-            st.warning("Retail prices Excel is empty")
+        if df.empty:
+            st.warning("Retail prices data is empty")
             return pd.DataFrame()
-        retail_required_columns = ['market', 'commodity', 'commodity_id', 'Price', 'Unit2', 'latitude', 'longitude', 'Year', 'Month']
-        missing_cols = [col for col in retail_required_columns if col not in retail_df.columns]
-        if missing_cols:
-            st.error(f"Missing columns in retail prices: {', '.join(missing_cols)}")
-            col_mapping = {col: st.selectbox(f"Map column for {col}", retail_df.columns, key=f"retail_{col}") for col in missing_cols}
-            retail_df = retail_df.rename(columns=col_mapping)
+        retail_df = df.copy()
         retail_df['Price'] = pd.to_numeric(retail_df['Price'], errors='coerce')
         retail_df['Year'] = pd.to_numeric(retail_df['Year'], errors='coerce')
         retail_df['Month'] = pd.to_numeric(retail_df['Month'], errors='coerce')
@@ -304,25 +292,16 @@ def load_retail_data(file_path):
             retail_df = retail_df[retail_df['Year'].between(2016, 2025)]
         return retail_df
     except Exception as e:
-        log_error(f"Error reading retail prices file {file_path}: {e}")
+        log_error(f"Error processing retail prices data: {e}")
         return pd.DataFrame()
 
 @st.cache_data
-def load_merged_data(file_path):
+def load_merged_data(df):
     try:
-        merged_df = pd.read_excel(file_path, sheet_name='merged_data')
-        if merged_df.empty:
-            st.warning("Merged data Excel sheet is empty")
+        if df.empty:
+            st.warning("Merged data is empty")
             return pd.DataFrame()
-        required_columns = ['date', 'market', 'market_id', 'latitude', 'longitude', 'commodity_retail', 'commodity_id',
-                           'price_retail', 'unit2_retail', 'year', 'month', 'commodity_farmgate', 'region_name',
-                           'region_latitude', 'region_longitude', 'price_farmgate', 'unit2_farmgate', 'commodity_english',
-                           'gross_margin', 'distance_km']
-        missing_cols = [col for col in required_columns if col not in merged_df.columns]
-        if missing_cols:
-            st.error(f"Missing columns in merged data: {', '.join(missing_cols)}")
-            col_mapping = {col: st.selectbox(f"Map column for {col}", merged_df.columns, key=f"merged_{col}") for col in missing_cols}
-            merged_df = merged_df.rename(columns=col_mapping)
+        merged_df = df.copy()
         merged_df['price_retail'] = pd.to_numeric(merged_df['price_retail'], errors='coerce')
         merged_df['price_farmgate'] = pd.to_numeric(merged_df['price_farmgate'], errors='coerce')
         merged_df['gross_margin'] = pd.to_numeric(merged_df['gross_margin'], errors='coerce')
@@ -339,7 +318,7 @@ def load_merged_data(file_path):
             merged_df = merged_df[merged_df['year'].between(2016, 2025)]
         return merged_df
     except Exception as e:
-        log_error(f"Error reading merged data file {file_path}: {e}")
+        log_error(f"Error processing merged data: {e}")
         return pd.DataFrame()
 
 # -------------------------------
@@ -476,6 +455,52 @@ def main():
         if not validate_file(path, key.replace('_', ' ').title()):
             return
 
+    # Preprocess Excel data for column mapping
+    prices_file = st.session_state.file_paths['prices']
+    farmgate_required_columns = ['Régions Name', 'Commodity', 'commodity_english', 'commodity_id', 'Price', 'Unit2', 'Régions - Latitude', 'Régions - Longitude', 'Year', 'Month']
+    retail_required_columns = ['market', 'commodity', 'commodity_id', 'Price', 'Unit2', 'latitude', 'longitude', 'Year', 'Month']
+    merged_required_columns = ['date', 'market', 'market_id', 'latitude', 'longitude', 'commodity_retail', 'commodity_id',
+                              'price_retail', 'unit2_retail', 'year', 'month', 'commodity_farmgate', 'region_name',
+                              'region_latitude', 'region_longitude', 'price_farmgate', 'unit2_farmgate', 'commodity_english',
+                              'gross_margin', 'distance_km']
+    
+    try:
+        # Load raw Excel data
+        farmgate_raw = pd.read_excel(prices_file, sheet_name='Farmgate prices Senegal')
+        retail_raw = pd.read_excel(prices_file, sheet_name='Retails Price Senegal')
+        merged_raw = pd.read_excel(prices_file, sheet_name='merged_data')
+    except Exception as e:
+        log_error(f"Failed to load Excel file {prices_file}: {e}")
+        return
+
+    # Handle missing columns
+    farmgate_col_mapping = {}
+    missing_farmgate_cols = [col for col in farmgate_required_columns if col not in farmgate_raw.columns]
+    if missing_farmgate_cols:
+        st.error(f"Missing columns in farmgate prices: {', '.join(missing_farmgate_cols)}")
+        with st.expander("Map Farmgate Columns"):
+            for col in missing_farmgate_cols:
+                farmgate_col_mapping[col] = st.selectbox(f"Map column for {col}", farmgate_raw.columns, key=f"farmgate_{col}")
+        farmgate_raw = farmgate_raw.rename(columns=farmgate_col_mapping)
+
+    retail_col_mapping = {}
+    missing_retail_cols = [col for col in retail_required_columns if col not in retail_raw.columns]
+    if missing_retail_cols:
+        st.error(f"Missing columns in retail prices: {', '.join(missing_retail_cols)}")
+        with st.expander("Map Retail Columns"):
+            for col in missing_retail_cols:
+                retail_col_mapping[col] = st.selectbox(f"Map column for {col}", retail_raw.columns, key=f"retail_{col}")
+        retail_raw = retail_raw.rename(columns=retail_col_mapping)
+
+    merged_col_mapping = {}
+    missing_merged_cols = [col for col in merged_required_columns if col not in merged_raw.columns]
+    if missing_merged_cols:
+        st.error(f"Missing columns in merged data: {', '.join(missing_merged_cols)}")
+        with st.expander("Map Merged Columns"):
+            for col in missing_merged_cols:
+                merged_col_mapping[col] = st.selectbox(f"Map column for {col}", merged_raw.columns, key=f"merged_{col}")
+        merged_raw = merged_raw.rename(columns=merged_col_mapping)
+
     # Load data
     with st.spinner("Loading data..."):
         progress = st.progress(0)
@@ -507,9 +532,9 @@ def main():
     population_png_path, population_image_bounds, population_breaks, population_colors = generate_population_image(population_data, population_bounds)
 
     # Load price data
-    prices_df = load_price_data(st.session_state.file_paths['prices'])
-    retail_df = load_retail_data(st.session_state.file_paths['prices'])
-    merged_df = load_merged_data(st.session_state.file_paths['prices'])
+    prices_df = load_price_data(farmgate_raw)
+    retail_df = load_retail_data(retail_raw)
+    merged_df = load_merged_data(merged_raw)
     
     commodity_map = pd.concat([
         prices_df[['commodity_id', 'commodity_english']].drop_duplicates() if not prices_df.empty else pd.DataFrame(),
