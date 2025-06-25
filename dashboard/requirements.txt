@@ -10,3 +10,4 @@ scipy
 geopy
 pillow
 scikit-learn
+openpyxl
