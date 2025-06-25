@@ -12,3 +12,5 @@ openpyxl
 geopandas 
 scipy
 shapely
+tensorflow
+sklearn
