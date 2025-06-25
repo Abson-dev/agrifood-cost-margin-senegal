@@ -12,7 +12,6 @@ from streamlit_folium import st_folium
 from geopy.distance import geodesic
 import plotly.express as px
 import plotly.graph_objects as go
-import uuid
 import tempfile
 import atexit
 from scipy.interpolate import interp1d
@@ -29,7 +28,11 @@ DEFAULT_FILES = {
     'markets': os.path.join(BASE_DIR, 'markets_from_excel.geojson'),
     'roads': os.path.join(BASE_DIR, 'roads_filtered.geojson'),
     'prices': os.path.join(BASE_DIR, 'merged_farmgate_retail_prices_senegal.xlsx'),
-    'population': os.path.join(BASE_DIR, 'sen_ppp_2020_UNadj.tif')
+    'population_2016': os.path.join(BASE_DIR, 'sen_ppp_2016_UNadj.tif'),
+    'population_2017': os.path.join(BASE_DIR, 'sen_ppp_2017_UNadj.tif'),
+    'population_2018': os.path.join(BASE_DIR, 'sen_ppp_2018_UNadj.tif'),
+    'population_2019': os.path.join(BASE_DIR, 'sen_ppp_2019_UNadj.tif'),
+    'population_2020': os.path.join(BASE_DIR, 'sen_ppp_2020_UNadj.tif')
 }
 
 # Initialize session state
@@ -46,7 +49,7 @@ if 'map_render_key' not in st.session_state:
 if 'commodity_map' not in st.session_state:
     st.session_state['commodity_map'] = {}
 if 'map_height' not in st.session_state:
-    st.session_state['map_height'] = 800  # Default map height
+    st.session_state['map_height'] = 800
 
 # -------------------------------
 # Helper Functions
@@ -134,17 +137,13 @@ def compute_population_within_buffer(markets_gdf, population_file, buffer_size_k
     Compute population within a buffer_size_km radius around each market.
     Returns a dictionary mapping market indices to population estimates.
     """
-    if markets_gdf.empty:
+    if markets_gdf.empty or not os.path.exists(population_file):
         return {}
 
-    # Determine UTM zone for Senegal (approx. Zone 28N for West Africa)
     utm_crs = 'EPSG:32628'  # UTM Zone 28N
     try:
-        # Reproject markets to UTM for accurate buffering
         markets_utm = markets_gdf.to_crs(utm_crs)
-        # Create 5km buffers (buffer distance in meters)
         markets_utm['geometry'] = markets_utm.geometry.buffer(buffer_size_km * 1000)
-        # Reproject buffers back to EPSG:4326 for raster clipping
         markets_buffered = markets_utm.to_crs('EPSG:4326')
 
         population_sums = {}
@@ -152,9 +151,7 @@ def compute_population_within_buffer(markets_gdf, population_file, buffer_size_k
             for idx, row in markets_buffered.iterrows():
                 geom = [row.geometry.__geo_interface__]
                 try:
-                    # Clip raster with buffer geometry
                     out_image, _ = mask(src, geom, crop=True, nodata=src.nodata)
-                    # Mask nodata and sum valid population values
                     out_image = np.ma.masked_equal(out_image, src.nodata)
                     population_sum = np.nansum(out_image)
                     population_sums[idx] = round(population_sum, 2) if not np.isnan(population_sum) else 0
@@ -243,7 +240,6 @@ def load_geojson(file_path, max_features=500, is_roads=False, population_file=No
             st.warning(f"GeoJSON file {file_path} has {len(gdf)} features. Limiting to {max_features}.")
             gdf = gdf.head(max_features)
         
-        # Compute population for markets if population_file is provided
         if not is_roads and population_file:
             population_sums = compute_population_within_buffer(gdf, population_file)
             gdf['population_5km'] = gdf.index.map(population_sums)
@@ -301,7 +297,7 @@ def load_retail_data(file_path):
 # Main Dashboard
 # -------------------------------
 def main():
-    # Custom CSS for styling and responsiveness
+    # Custom CSS
     st.markdown(f"""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
@@ -332,7 +328,7 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    # Header with IFPRI branding
+    # Header
     st.markdown("""
     <div class="header">
         <img src="https://www.ifpri.org/themes/custom/ifpri/logo.svg" alt="IFPRI Logo" width="150">
@@ -352,7 +348,7 @@ def main():
     st.sidebar.header("Data Sources")
     uploaded_files = {}
     for key, default_path in DEFAULT_FILES.items():
-        uploaded_file = st.sidebar.file_uploader(f"Upload {key.capitalize()} File", type=['tiff', 'tif'] if key in ['raster', 'friction', 'population'] else ['geojson', 'xlsx'])
+        uploaded_file = st.sidebar.file_uploader(f"Upload {key.replace('_', ' ').title()} File", type=['tiff', 'tif'] if 'population' in key or key in ['raster', 'friction'] else ['geojson', 'xlsx'])
         if uploaded_file:
             uploaded_path = os.path.join(BASE_DIR, uploaded_file.name)
             with open(uploaded_path, 'wb') as f:
@@ -367,19 +363,24 @@ def main():
     if not ensure_default_files():
         return
     for key, path in st.session_state.file_paths.items():
-        if not validate_file(path, key.capitalize()):
+        if not validate_file(path, key.replace('_', ' ').title()):
             return
 
-    # Load data with progress bar
+    # Load data
     with st.spinner("Loading data..."):
         progress = st.progress(0)
         travel_time, travel_bounds = load_and_process_raster(st.session_state.file_paths['raster'])
         progress.progress(0.2)
         friction_data, friction_bounds = load_and_process_raster(st.session_state.file_paths['friction'])
         progress.progress(0.4)
-        population_data, population_bounds = load_and_process_raster(st.session_state.file_paths['population'])
+        
+        # Select population raster based on year
+        selected_year = st.session_state.get('selected_year', 2020)
+        pop_key = f'population_{min(selected_year, 2020)}'  # Default to 2020 if year > 2020
+        population_data, population_bounds = load_and_process_raster(st.session_state.file_paths[pop_key])
         progress.progress(0.6)
-        markets = load_geojson(st.session_state.file_paths['markets'], population_file=st.session_state.file_paths['population'])
+        
+        markets = load_geojson(st.session_state.file_paths['markets'], population_file=st.session_state.file_paths[pop_key])
         progress.progress(0.8)
         roads_filtered = load_geojson(st.session_state.file_paths['roads'], max_features=500, is_roads=True)
         progress.progress(1.0)
@@ -389,7 +390,7 @@ def main():
         return
 
     if population_data is not None:
-        st.write(f"Population data loaded: shape={population_data.shape}, bounds={population_bounds}")
+        st.write(f"Population data ({pop_key}) loaded: shape={population_data.shape}, bounds={population_bounds}")
     else:
         st.error("Population data is None. Please check the file.")
 
@@ -398,7 +399,7 @@ def main():
     friction_png_path, friction_image_bounds, friction_breaks, friction_colors = generate_friction_image(friction_data, friction_bounds)
     population_png_path, population_image_bounds, population_breaks, population_colors = generate_population_image(population_data, population_bounds)
 
-    # Validate price data columns
+    # Load price data
     farmgate_required_columns = ['Régions Name', 'Commodity', 'commodity_english', 'commodity_id', 'Price', 'Unit2', 'Régions - Latitude', 'Régions - Longitude', 'Year', 'Month']
     retail_required_columns = ['market', 'commodity', 'commodity_id', 'Price', 'Unit2', 'latitude', 'longitude', 'Year', 'Month']
     prices_df = load_price_data(st.session_state.file_paths['prices'])
@@ -410,7 +411,6 @@ def main():
         st.error(f"Missing columns in retail prices: {', '.join([col for col in retail_required_columns if col not in retail_df.columns])}")
         retail_df = pd.DataFrame()
 
-    # Create commodity name mapping
     if prices_df.empty and retail_df.empty:
         st.error("No valid price data loaded. Please check your files.")
         return
@@ -420,13 +420,12 @@ def main():
     ]).drop_duplicates(subset='commodity_id').set_index('commodity_id')['commodity_english'].to_dict()
     st.session_state.commodity_map = commodity_map
 
-    # Validate commodity overlap
     commodity_options = validate_commodity_overlap(prices_df, retail_df)
     if not commodity_options:
         return
     commodity_id_to_name = {cid: commodity_map.get(cid, str(cid)) for cid in commodity_options}
 
-    # Tabs for different views
+    # Tabs
     tab1, tab2, tab3 = st.tabs(["Interactive Map", "Data Summary", "Price Trends"])
 
     with tab1:
@@ -437,7 +436,8 @@ def main():
         # Filter controls
         st.sidebar.header("Map Filters")
         available_years = list(range(2016, 2026))
-        selected_year = st.sidebar.selectbox("Select Year", available_years, index=len(available_years)-1, key="year_select", on_change=lambda: st.session_state.update({'map_data_updated': True}))
+        selected_year = st.sidebar.selectbox("Select Year", available_years, index=len(available_years)-1, key="year_select", on_change=lambda: st.session_state.update({'map_data_updated': True, 'selected_year': st.session_state['year_select']}))
+        st.session_state['selected_year'] = selected_year
 
         month_names = {1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
                        7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"}
@@ -465,7 +465,6 @@ def main():
         show_retail = st.sidebar.checkbox("Retail Prices", value=False)
         show_population = st.sidebar.checkbox("Population", value=True)
 
-        # Map height control
         st.sidebar.slider("Map Height (px)", 400, 1000, st.session_state['map_height'], key="map_height")
 
         # Update map data
@@ -518,7 +517,6 @@ def main():
                     )
                     folium.FitBounds([[12.3, -17], [16.7, -11]]).add_to(m)
 
-                    # Add Roads Layer
                     if show_roads and roads_filtered:
                         folium.GeoJson(
                             roads_filtered,
@@ -526,7 +524,6 @@ def main():
                             style_function=lambda x: {'color': '#3b82f6', 'weight': 1, 'opacity': 0.7}
                         ).add_to(m)
 
-                    # Add Markets Layer
                     if show_markets and markets:
                         market_group = folium.FeatureGroup(name="Markets", show=True)
                         valid_markers = 0
@@ -547,7 +544,6 @@ def main():
                         else:
                             market_group.add_to(m)
 
-                    # Add Farmgate Prices Layer
                     if show_farmgate and not st.session_state.latest_farmgate_prices.empty:
                         farmgate_cluster = MarkerCluster(name="Farmgate Prices").add_to(m)
                         valid_farmgate_markers = 0
@@ -563,11 +559,10 @@ def main():
                             ).add_to(farmgate_cluster)
                             valid_farmgate_markers += 1
                         if valid_farmgate_markers == 0:
-                            st.warning("No valid farmgate price locations found for the selected filters.")
+                            st.warning("No valid farmgate markers found.")
 
-                    # Add Retail Prices Layer
                     if show_retail and not st.session_state.latest_retail_prices.empty:
-                        retail_cluster = MarkerCluster(name="Retail Prices").add_to(m)
+                        retail_cluster = MarkerCluster(name="Retail").add_to(m)
                         valid_retail_markers = 0
                         for _, row in st.session_state.latest_retail_prices.iterrows():
                             if pd.isna(row['latitude']) or pd.isna(row['longitude']):
@@ -580,9 +575,8 @@ def main():
                             ).add_to(retail_cluster)
                             valid_retail_markers += 1
                         if valid_retail_markers == 0:
-                            st.warning("No valid retail price locations found for the selected filters.")
+                            st.warning("No valid retail markers found.")
 
-                    # Add Raster Overlays
                     if show_travel:
                         folium.raster_layers.ImageOverlay(
                             name="Travel Time",
@@ -603,7 +597,7 @@ def main():
                         ).add_to(m)
                     if show_population:
                         folium.raster_layers.ImageOverlay(
-                            name="Population",
+                            name=f"Population ({min(selected_year, 2020)})",
                             image=population_png_path,
                             bounds=population_image_bounds,
                             opacity=0.8,
@@ -611,14 +605,12 @@ def main():
                             cross_origin=False
                         ).add_to(m)
 
-                    # Add MiniMap and Fullscreen
                     MiniMap(tiles='OpenStreetMap', position='bottomleft', width=150, height=150).add_to(m)
-                    Fullscreen(position='topright', title='Expand', title_cancel='Exit').add_to(m)
+                    Fullscreen(position='topright', title='Expand').add_to(m)
 
                     folium.LayerControl(collapsed=False).add_to(m)
                     st_folium(m, use_container_width=True, height=st.session_state['map_height'], key=f"folium_map_{st.session_state.map_render_key}")
 
-                    # Add Dynamic Legends
                     if show_travel or show_friction or show_population:
                         col1, col2 = st.columns(2)
                         if show_travel:
@@ -628,9 +620,9 @@ def main():
                             with col2:
                                 st.markdown(generate_legend_html(friction_breaks, friction_colors, "Friction (min/m)"), unsafe_allow_html=True)
                         if show_population:
-                            st.markdown(generate_legend_html(population_breaks, population_colors, "Population (people per pixel)"), unsafe_allow_html=True)
+                            st.markdown(generate_legend_html(population_breaks, population_colors, f"Population ({min(selected_year, 2020)}) (people per pixel)"), unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"Map rendering failed: {str(e)}. Please check data files or coordinates.")
+                    st.error(f"Map rendering failed: {str(e)}.")
                 finally:
                     st.spinner(False)
 
@@ -657,7 +649,7 @@ def main():
                 format_func=lambda x: commodity_id_to_name.get(x, str(x)),
                 key="trend_commodity_select"
             )
-            show_gross_margin = st.checkbox("Show Gross Margin (Retail - Farmgate)", value=True, key="show_gross_margin")
+            show_gross_margin = st.checkbox("Show Gross Margin (Retail - Farmgate)", value=True, key="Gross Margin")
             try:
                 farmgate_trend = prices_df[prices_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if not farmgate_trend.empty:
