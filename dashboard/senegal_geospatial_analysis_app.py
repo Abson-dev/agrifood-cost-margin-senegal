@@ -103,19 +103,18 @@ def calculate_nearest_market_distance(farmgate_df, markets_gdf):
     if farmgate_df.empty or markets_gdf.empty:
         return farmgate_df
     
-    farmgate_df['Distance_to_Nearest_Market_km'] = np.nan
+    farmgate_df['Distance_km'] = np.nan
     market_coords = [(row.geometry.y, row.geometry.x) for _, row in markets_gdf.iterrows() if row.geometry.type == 'Point']
     
     if not market_coords:
-        st.warning("No valid market coordinates found for distance calculation.")
         return farmgate_df
     
     for idx, row in farmgate_df.iterrows():
         if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
             continue
-        farmgate_point = (row['Régions - Latitude'], row['Régions - Longitude'])
-        distances = [geodesic(farmgate_point, market).kilometers for market in market_coords]
-        farmgate_df.at[idx, 'Distance_to_Nearest_Market_km'] = min(distances)
+        farmgate_point = (row['Régions - Latitude'], float(row['Régions - Longitude'])
+        distances_km = [geodesic(farmgate_point, market).kilometers for market in market_coords]
+        farmgate_df.at[idx, 'Distance_km'] = min(distances_km)
     
     return farmgate_df
 
@@ -126,7 +125,7 @@ def interpolate_missing(data, date_col='Date', value_col='Price'):
     x = data[date_col].map(lambda x: x.timestamp())
     y = data[value_col]
     f = interp1d(x, y, kind='linear', fill_value='extrapolate')
-    new_dates = pd.date_range(data[date_col].min(), data[date_col].max(), freq='M')
+    new_dates = pd.date_range(data[date_col].min(), data[date_col].max())
     new_values = f([d.timestamp() for d in new_dates])
     return pd.DataFrame({'Date': new_dates, value_col: new_values})
 
@@ -135,7 +134,7 @@ def generate_legend_html(breaks, colors, title):
     html = f'<div class="legend-container"><div class="legend-title">{title}</div>'
     for i, (b1, b2) in enumerate(zip(breaks[:-1], breaks[1:])):
         color = f'rgb{colors[i]}'
-        label = f'{b1:.3f}–{b2:.3f}' if b2 != np.inf else f'>{b1:.3f}'
+        label = f'{b1:.3f}–{b2:.3f}' if b2 != np.inf else f'>{b1:.1f}'
         html += f'<div class="legend-item"><span class="legend-color" style="background:{color};"></span> {label}</div>'
     html += '</div>'
     return html
@@ -572,153 +571,159 @@ def main():
         # Render Map
         map_placeholder = st.empty()
         with map_placeholder.container():
-            # Check for empty data and display notifications
+            # Check for empty price data and display notifications
+            data_missing = False
             if show_farmgate and st.session_state.latest_farmgate_prices.empty:
                 selected_commodities = ", ".join([commodity_id_to_name.get(cid, str(cid)) for cid in selected_commodity_ids]) or "any commodity"
-                st.warning(f"No farmgate price data available for {selected_commodities} in {month_names.get(selected_month, selected_month)} {selected_year}.")
+                st.warning(f"No farmgate price data available for {selected_commodities} in {month_names.get(selected_month, selected_month)} {selected_year}. Map will not render.")
+                data_missing = True
             if show_retail and st.session_state.latest_retail_prices.empty:
                 selected_commodities = ", ".join([commodity_id_to_name.get(cid, str(cid)) for cid in selected_commodity_ids]) or "any commodity"
-                st.warning(f"No retail price data available for {selected_commodities} in {month_names.get(selected_month, selected_month)} {selected_year}.")
+                st.warning(f"No retail price data available for {selected_commodities} in {month_names.get(selected_month, selected_month)} {selected_year}. Map will not render.")
+                data_missing = True
             if show_merged and st.session_state.latest_merged_prices.empty:
                 selected_commodities = ", ".join([commodity_id_to_name.get(cid, str(cid)) for cid in selected_commodity_ids]) or "any commodity"
                 market_text = f"market {selected_market}" if selected_market != "All" else "any market"
-                st.warning(f"No merged retail-farmgate data available for {selected_commodities} in {market_text}, {month_names.get(selected_month, selected_month)} {selected_year}.")
+                st.warning(f"No merged retail-farmgate data available for {selected_commodities} in {market_text}, {month_names.get(selected_month, selected_month)} {selected_year}. Map will not render.")
+                data_missing = True
 
-            with st.spinner("Rendering map..."):
-                try:
-                    m = folium.Map(
-                        location=[14.5, -14.5],
-                        zoom_start=6,
-                        tiles="CartoDB Positron"
-                    )
-                    folium.FitBounds([[12.3, -17], [16.7, -11]]).add_to(m)
+            # Render map only if no price data is missing for enabled price layers or if non-price layers are enabled
+            if not data_missing or (show_travel or show_friction or show_roads or show_markets or show_population):
+                with st.spinner("Rendering map..."):
+                    try:
+                        m = folium.Map(
+                            location=[14.5, -14.5],
+                            zoom_start=6,
+                            tiles="CartoDB Positron"
+                        )
+                        folium.FitBounds([[12.3, -17], [16.7, -11]]).add_to(m)
 
-                    if show_roads and roads_filtered:
-                        folium.GeoJson(
-                            roads_filtered,
-                            name="Roads",
-                            style_function=lambda x: {'color': '#3b82f6', 'weight': 1, 'opacity': 0.7}
-                        ).add_to(m)
-
-                    if show_markets and markets:
-                        market_group = folium.FeatureGroup(name="Markets", show=True)
-                        valid_markers = 0
-                        for feature in markets.get('features', []):
-                            if feature['geometry']['type'] == 'Point' and all(isinstance(c, (int, float)) for c in feature['geometry']['coordinates']):
-                                coords = feature['geometry']['coordinates'][::-1]
-                                market_name = feature['properties'].get('market', 'Unknown Market')
-                                population_5km = feature['properties'].get('population_5km', 0)
-                                popup_text = f"<b>Market:</b> {market_name}<br><b>Population (5km):</b> {population_5km:,.0f}"
-                                folium.Marker(
-                                    location=coords,
-                                    popup=folium.Popup(popup_text, max_width=250),
-                                    icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
-                                ).add_to(market_group)
-                                valid_markers += 1
-                        if valid_markers == 0:
-                            st.warning("No valid market locations found.")
-                        else:
-                            market_group.add_to(m)
-
-                    if show_farmgate and not st.session_state.latest_farmgate_prices.empty:
-                        farmgate_data = [
-                            [row['Régions - Latitude'], row['Régions - Longitude'], 
-                             f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Distance to Nearest Market:</b> {row['Distance_to_Nearest_Market_km']:.2f} km<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"]
-                            for _, row in st.session_state.latest_farmgate_prices.iterrows()
-                            if not pd.isna(row['Régions - Latitude']) and not pd.isna(row['Régions - Longitude'])
-                        ]
-                        FastMarkerCluster(
-                            data=farmgate_data,
-                            name="Farmgate Prices",
-                            callback="function(row) {return L.marker([row[0], row[1]], {icon: L.AwesomeMarkers.icon({icon: 'tractor', prefix: 'fa', markerColor: 'green'})}).bindPopup(row[2]);}"
-                        ).add_to(m)
-
-                    if show_retail and not st.session_state.latest_retail_prices.empty:
-                        retail_data = [
-                            [row['latitude'], row['longitude'], 
-                             f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"]
-                            for _, row in st.session_state.latest_retail_prices.iterrows()
-                            if not pd.isna(row['latitude']) and not pd.isna(row['longitude'])
-                        ]
-                        FastMarkerCluster(
-                            data=retail_data,
-                            name="Retail Prices",
-                            callback="function(row) {return L.marker([row[0], row[1]], {icon: L.AwesomeMarkers.icon({icon: 'shopping-basket', prefix: 'fa', markerColor: 'purple'})}).bindPopup(row[2]);}"
-                        ).add_to(m)
-
-                    if show_merged and not st.session_state.latest_merged_prices.empty:
-                        retail_merged_data = [
-                            [row['latitude'], row['longitude'],
-                             f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity_retail']}<br><b>Retail Price:</b> {row['price_retail']:.2f} {row['unit2_retail']}<br><b>Date:</b> {row['year']}-{row['month']:02d}"]
-                            for _, row in st.session_state.latest_merged_prices.drop_duplicates(subset=['market', 'commodity_id']).iterrows()
-                            if not pd.isna(row['latitude']) and not pd.isna(row['longitude'])
-                        ]
-                        farmgate_merged_data = [
-                            [row['region_latitude'], row['region_longitude'],
-                             f"<b>Region:</b> {row['region_name']}<br><b>Commodity:</b> {row['commodity_farmgate']}<br><b>Farmgate Price:</b> {row['price_farmgate']:.2f} {row['unit2_farmgate']}<br><b>Retail Market:</b> {row['market']}<br><b>Retail Price:</b> {row['price_retail']:.2f} {row['unit2_retail']}<br><b>Gross Margin:</b> {row['gross_margin']:.2f} XOF/KG<br><b>Distance:</b> {row['distance_km']:.2f} km<br><b>Date:</b> {row['year']}-{row['month']:02d}"]
-                            for _, row in st.session_state.latest_merged_prices.iterrows()
-                            if not pd.isna(row['region_latitude']) and not pd.isna(row['region_longitude'])
-                        ]
-                        if retail_merged_data:
-                            FastMarkerCluster(
-                                data=retail_merged_data,
-                                name="Merged Retail Prices",
-                                callback="function(row) {return L.marker([row[0], row[1]], {icon: L.AwesomeMarkers.icon({icon: 'shopping-basket', prefix: 'fa', markerColor: 'purple'})}).bindPopup(row[2]);}"
+                        if show_roads and roads_filtered:
+                            folium.GeoJson(
+                                roads_filtered,
+                                name="Roads",
+                                style_function=lambda x: {'color': '#3b82f6', 'weight': 1, 'opacity': 0.7}
                             ).add_to(m)
-                        if farmgate_merged_data:
+
+                        if show_markets and markets:
+                            market_group = folium.FeatureGroup(name="Markets", show=True)
+                            valid_markers = 0
+                            for feature in markets.get('features', []):
+                                if feature['geometry']['type'] == 'Point' and all(isinstance(c, (int, float)) for c in feature['geometry']['coordinates']):
+                                    coords = feature['geometry']['coordinates'][::-1]
+                                    market_name = feature['properties'].get('market', 'Unknown Market')
+                                    population_5km = feature['properties'].get('population_5km', 0)
+                                    popup_text = f"<b>Market:</b> {market_name}<br><b>Population (5km):</b> {population_5km:,.0f}"
+                                    folium.Marker(
+                                        location=coords,
+                                        popup=folium.Popup(popup_text, max_width=250),
+                                        icon=folium.Icon(color='blue', icon='shopping-cart', prefix='fa')
+                                    ).add_to(market_group)
+                                    valid_markers += 1
+                            if valid_markers == 0:
+                                st.warning("No valid market locations found.")
+                            else:
+                                market_group.add_to(m)
+
+                        if show_farmgate and not st.session_state.latest_farmgate_prices.empty:
+                            farmgate_data = [
+                                [row['Régions - Latitude'], row['Régions - Longitude'], 
+                                 f"<b>Region:</b> {row['Régions Name']}<br><b>Commodity:</b> {row['commodity_english']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Distance to Nearest Market:</b> {row['Distance_to_Nearest_Market_km']:.2f} km<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"]
+                                for _, row in st.session_state.latest_farmgate_prices.iterrows()
+                                if not pd.isna(row['Régions - Latitude']) and not pd.isna(row['Régions - Longitude'])
+                            ]
                             FastMarkerCluster(
-                                data=farmgate_merged_data,
-                                name="Merged Farmgate Prices",
+                                data=farmgate_data,
+                                name="Farmgate Prices",
                                 callback="function(row) {return L.marker([row[0], row[1]], {icon: L.AwesomeMarkers.icon({icon: 'tractor', prefix: 'fa', markerColor: 'green'})}).bindPopup(row[2]);}"
                             ).add_to(m)
 
-                    if show_travel:
-                        folium.raster_layers.ImageOverlay(
-                            name="Travel Time",
-                            image=travel_png_path,
-                            bounds=travel_image_bounds,
-                            opacity=0.6,
-                            interactive=True,
-                            cross_origin=False
-                        ).add_to(m)
-                    if show_friction:
-                        folium.raster_layers.ImageOverlay(
-                            name="Friction Surface (min/m)",
-                            image=friction_png_path,
-                            bounds=friction_image_bounds,
-                            opacity=0.7,
-                            interactive=True,
-                            cross_origin=False
-                        ).add_to(m)
-                    if show_population:
-                        folium.raster_layers.ImageOverlay(
-                            name=f"Population ({min(selected_year, 2020)})",
-                            image=population_png_path,
-                            bounds=population_image_bounds,
-                            opacity=0.8,
-                            interactive=True,
-                            cross_origin=False
-                        ).add_to(m)
+                        if show_retail and not st.session_state.latest_retail_prices.empty:
+                            retail_data = [
+                                [row['latitude'], row['longitude'], 
+                                 f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity']}<br><b>Price:</b> {row['Price']:.2f} {row['Unit2']}<br><b>Date:</b> {row['Year']}-{row['Month']:02d}"]
+                                for _, row in st.session_state.latest_retail_prices.iterrows()
+                                if not pd.isna(row['latitude']) and not pd.isna(row['longitude'])
+                            ]
+                            FastMarkerCluster(
+                                data=retail_data,
+                                name="Retail Prices",
+                                callback="function(row) {return L.marker([row[0], row[1]], {icon: L.AwesomeMarkers.icon({icon: 'shopping-basket', prefix: 'fa', markerColor: 'purple'})}).bindPopup(row[2]);}"
+                            ).add_to(m)
 
-                    MiniMap(tiles='OpenStreetMap', position='bottomleft', width=150, height=150).add_to(m)
-                    Fullscreen(position='topright', title='Expand').add_to(m)
-                    folium.LayerControl(collapsed=False).add_to(m)
-                    st_folium(m, use_container_width=True, height=st.session_state['map_height'], key=f"folium_map_{st.session_state.map_render_key}")
+                        if show_merged and not st.session_state.latest_merged_prices.empty:
+                            retail_merged_data = [
+                                [row['latitude'], row['longitude'],
+                                 f"<b>Market:</b> {row['market']}<br><b>Commodity:</b> {row['commodity_retail']}<br><b>Retail Price:</b> {row['price_retail']:.2f} {row['unit2_retail']}<br><b>Date:</b> {row['year']}-{row['month']:02d}"]
+                                for _, row in st.session_state.latest_merged_prices.drop_duplicates(subset=['market', 'commodity_id']).iterrows()
+                                if not pd.isna(row['latitude']) and not pd.isna(row['longitude'])
+                            ]
+                            farmgate_merged_data = [
+                                [row['region_latitude'], row['region_longitude'],
+                                 f"<b>Region:</b> {row['region_name']}<br><b>Commodity:</b> {row['commodity_farmgate']}<br><b>Farmgate Price:</b> {row['price_farmgate']:.2f} {row['unit2_farmgate']}<br><b>Retail Market:</b> {row['market']}<br><b>Retail Price:</b> {row['price_retail']:.2f} {row['unit2_retail']}<br><b>Gross Margin:</b> {row['gross_margin']:.2f} XOF/KG<br><b>Distance:</b> {row['distance_km']:.2f} km<br><b>Date:</b> {row['year']}-{row['month']:02d}"]
+                                for _, row in st.session_state.latest_merged_prices.iterrows()
+                                if not pd.isna(row['region_latitude']) and not pd.isna(row['region_longitude'])
+                            ]
+                            if retail_merged_data:
+                                FastMarkerCluster(
+                                    data=retail_merged_data,
+                                    name="Merged Retail Prices",
+                                    callback="function(row) {return L.marker([row[0], row[1]], {icon: L.AwesomeMarkers.icon({icon: 'shopping-basket', prefix: 'fa', markerColor: 'purple'})}).bindPopup(row[2]);}"
+                                ).add_to(m)
+                            if farmgate_merged_data:
+                                FastMarkerCluster(
+                                    data=farmgate_merged_data,
+                                    name="Merged Farmgate Prices",
+                                    callback="function(row) {return L.marker([row[0], row[1]], {icon: L.AwesomeMarkers.icon({icon: 'tractor', prefix: 'fa', markerColor: 'green'})}).bindPopup(row[2]);}"
+                                ).add_to(m)
 
-                    # Render legends in a separate container
-                    if st.session_state['show_legends'] and (show_travel or show_friction or show_population):
-                        st.markdown("### Raster Layer Legends")
-                        col1, col2 = st.columns(2)
-                        if show_travel and travel_breaks and travel_colors:
-                            with col1:
-                                st.markdown(generate_legend_html(travel_breaks, travel_colors, "Travel Time (min)"), unsafe_allow_html=True)
-                        if show_friction and friction_breaks and friction_colors:
-                            with col2:
-                                st.markdown(generate_legend_html(friction_breaks, friction_colors, "Friction (min/m)"), unsafe_allow_html=True)
-                        if show_population and population_breaks and population_colors:
-                            st.markdown(generate_legend_html(population_breaks, population_colors, f"Population ({min(selected_year, 2020)}) (people per pixel)"), unsafe_allow_html=True)
-                except Exception as e:
-                    log_error(f"Map rendering failed: {str(e)}")
+                        if show_travel:
+                            folium.raster_layers.ImageOverlay(
+                                name="Travel Time",
+                                image=travel_png_path,
+                                bounds=travel_image_bounds,
+                                opacity=0.6,
+                                interactive=True,
+                                cross_origin=False
+                            ).add_to(m)
+                        if show_friction:
+                            folium.raster_layers.ImageOverlay(
+                                name="Friction Surface (min/m)",
+                                image=friction_png_path,
+                                bounds=friction_image_bounds,
+                                opacity=0.7,
+                                interactive=True,
+                                cross_origin=False
+                            ).add_to(m)
+                        if show_population:
+                            folium.raster_layers.ImageOverlay(
+                                name=f"Population ({min(selected_year, 2020)})",
+                                image=population_png_path,
+                                bounds=population_image_bounds,
+                                opacity=0.8,
+                                interactive=True,
+                                cross_origin=False
+                            ).add_to(m)
+
+                        MiniMap(tiles='OpenStreetMap', position='bottomleft', width=150, height=150).add_to(m)
+                        Fullscreen(position='topright', title='Expand').add_to(m)
+                        folium.LayerControl(collapsed=False).add_to(m)
+                        st_folium(m, use_container_width=True, height=st.session_state['map_height'], key=f"folium_map_{st.session_state.map_render_key}")
+
+                        # Render legends in a separate container
+                        if st.session_state['show_legends'] and (show_travel or show_friction or show_population):
+                            st.markdown("### Raster Layer Legends")
+                            col1, col2 = st.columns(2)
+                            if show_travel and travel_breaks and travel_colors:
+                                with col1:
+                                    st.markdown(generate_legend_html(travel_breaks, travel_colors, "Travel Time (min)"), unsafe_allow_html=True)
+                            if show_friction and friction_breaks and friction_colors:
+                                with col2:
+                                    st.markdown(generate_legend_html(friction_breaks, friction_colors, "Friction (min/m)"), unsafe_allow_html=True)
+                            if show_population and population_breaks and population_colors:
+                                st.markdown(generate_legend_html(population_breaks, population_colors, f"Population ({min(selected_year, 2020)}) (people per pixel)"), unsafe_allow_html=True)
+                    except Exception as e:
+                        log_error(f"Map rendering failed: {str(e)}")
 
     with tab2:
         st.subheader("Data Summary")
@@ -736,7 +741,7 @@ def main():
             st.dataframe(
                 st.session_state.latest_farmgate_prices[['Régions Name', 'commodity_english', 'Price', 'Unit2', 'Distance_to_Nearest_Market_km', 'Year', 'Month']],
                 use_container_width=True,
-                height=300
+                height=150
             )
             st.download_button(
                 label="Download Farmgate Prices",
@@ -750,7 +755,7 @@ def main():
             st.dataframe(
                 st.session_state.latest_retail_prices[['market', 'commodity', 'Price', 'Unit2', 'Year', 'Month']],
                 use_container_width=True,
-                height=300
+                height=150
             )
             st.download_button(
                 label="Download Retail Prices",
@@ -764,7 +769,7 @@ def main():
             st.dataframe(
                 st.session_state.latest_merged_prices[['market', 'commodity_retail', 'price_retail', 'unit2_retail', 'region_name', 'commodity_farmgate', 'price_farmgate', 'unit2_farmgate', 'gross_margin', 'distance_km', 'year', 'month']],
                 use_container_width=True,
-                height=300
+                height=150
             )
             st.download_button(
                 label="Download Merged Prices",
@@ -794,7 +799,7 @@ def main():
                 farmgate_trend = prices_df[prices_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if not farmgate_trend.empty:
                     farmgate_trend['Date'] = pd.to_datetime(farmgate_trend[['Year', 'Month']].assign(day=1), errors='coerce')
-                    farmgate_trend = farmgate_trend.dropna(subset=['Date']).reset_index(drop=True)
+                    farmgate_trend = farmgate_trend.dropna(subset=['Date']).copy()
                     farmgate_trend = interpolate_missing(farmgate_trend)
                     farmgate_trend['Price Type'] = 'Farmgate'
                 else:
@@ -803,7 +808,7 @@ def main():
                 retail_trend = retail_df[retail_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if not retail_trend.empty:
                     retail_trend['Date'] = pd.to_datetime(retail_trend[['Year', 'Month']].assign(day=1), errors='coerce')
-                    retail_trend = retail_trend.dropna(subset=['Date']).reset_index(drop=True)
+                    retail_trend = retail_trend.dropna(subset=['Date']).copy()
                     retail_trend = interpolate_missing(retail_trend)
                     retail_trend['Price Type'] = 'Retail'
                 else:
@@ -815,9 +820,9 @@ def main():
                         retail_trend[['Date', 'Price']],
                         on='Date',
                         how='inner',
-                        suffixes=('_farmgate', '_retail')
+                        suffixes=['_farm', '_retail']
                     )
-                    margin_trend['Price'] = margin_trend['Price_retail'] - margin_trend['Price_farmgate']
+                    margin_trend['Price'] = margin_trend['Price_retail'] - margin_trend['Price_farm']
                     margin_trend['Price Type'] = 'Gross Margin'
                     margin_trend = margin_trend[['Date', 'Price', 'Price Type']].dropna(subset=['Price'])
                 else:
