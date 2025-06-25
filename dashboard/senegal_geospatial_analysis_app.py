@@ -112,7 +112,7 @@ def calculate_nearest_market_distance(farmgate_df, markets_gdf):
     for idx, row in farmgate_df.iterrows():
         if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
             continue
-        farmgate_point = (row['Régions - Latitude'], float(row['Régions - Longitude'])
+        farmgate_point = (row['Régions - Latitude'], float(row['Régions - Longitude']))
         distances_km = [geodesic(farmgate_point, market).kilometers for market in market_coords]
         farmgate_df.at[idx, 'Distance_km'] = min(distances_km)
     
