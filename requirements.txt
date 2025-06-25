@@ -1,0 +1,16 @@
+rasterio
+numpy
+pandas
+Pillow
+folium
+streamlit
+streamlit-folium
+branca
+plotly
+geopy
+openpyxl
+geopandas 
+scipy
+shapely
+tensorflow
+scikit-learn
