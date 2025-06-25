@@ -103,18 +103,19 @@ def calculate_nearest_market_distance(farmgate_df, markets_gdf):
     if farmgate_df.empty or markets_gdf.empty:
         return farmgate_df
     
-    farmgate_df['Distance_km'] = np.nan
+    farmgate_df['Distance_to_Nearest_Market_km'] = np.nan
     market_coords = [(row.geometry.y, row.geometry.x) for _, row in markets_gdf.iterrows() if row.geometry.type == 'Point']
     
     if not market_coords:
+        st.warning("No valid market coordinates found for distance calculation.")
         return farmgate_df
     
     for idx, row in farmgate_df.iterrows():
         if pd.isna(row['Régions - Latitude']) or pd.isna(row['Régions - Longitude']):
             continue
         farmgate_point = (row['Régions - Latitude'], float(row['Régions - Longitude']))
-        distances_km = [geodesic(farmgate_point, market).kilometers for market in market_coords]
-        farmgate_df.at[idx, 'Distance_km'] = min(distances_km)
+        distances = [geodesic(farmgate_point, market).kilometers for market in market_coords]
+        farmgate_df.at[idx, 'Distance_to_Nearest_Market_km'] = min(distances)
     
     return farmgate_df
 
@@ -125,7 +126,7 @@ def interpolate_missing(data, date_col='Date', value_col='Price'):
     x = data[date_col].map(lambda x: x.timestamp())
     y = data[value_col]
     f = interp1d(x, y, kind='linear', fill_value='extrapolate')
-    new_dates = pd.date_range(data[date_col].min(), data[date_col].max())
+    new_dates = pd.date_range(data[date_col].min(), data[date_col].max(), freq='M')
     new_values = f([d.timestamp() for d in new_dates])
     return pd.DataFrame({'Date': new_dates, value_col: new_values})
 
@@ -134,7 +135,7 @@ def generate_legend_html(breaks, colors, title):
     html = f'<div class="legend-container"><div class="legend-title">{title}</div>'
     for i, (b1, b2) in enumerate(zip(breaks[:-1], breaks[1:])):
         color = f'rgb{colors[i]}'
-        label = f'{b1:.3f}–{b2:.3f}' if b2 != np.inf else f'>{b1:.1f}'
+        label = f'{b1:.3f}–{b2:.3f}' if b2 != np.inf else f'>{b1:.3f}'
         html += f'<div class="legend-item"><span class="legend-color" style="background:{color};"></span> {label}</div>'
     html += '</div>'
     return html
@@ -741,7 +742,7 @@ def main():
             st.dataframe(
                 st.session_state.latest_farmgate_prices[['Régions Name', 'commodity_english', 'Price', 'Unit2', 'Distance_to_Nearest_Market_km', 'Year', 'Month']],
                 use_container_width=True,
-                height=150
+                height=300
             )
             st.download_button(
                 label="Download Farmgate Prices",
@@ -755,7 +756,7 @@ def main():
             st.dataframe(
                 st.session_state.latest_retail_prices[['market', 'commodity', 'Price', 'Unit2', 'Year', 'Month']],
                 use_container_width=True,
-                height=150
+                height=300
             )
             st.download_button(
                 label="Download Retail Prices",
@@ -769,7 +770,7 @@ def main():
             st.dataframe(
                 st.session_state.latest_merged_prices[['market', 'commodity_retail', 'price_retail', 'unit2_retail', 'region_name', 'commodity_farmgate', 'price_farmgate', 'unit2_farmgate', 'gross_margin', 'distance_km', 'year', 'month']],
                 use_container_width=True,
-                height=150
+                height=300
             )
             st.download_button(
                 label="Download Merged Prices",
@@ -799,7 +800,7 @@ def main():
                 farmgate_trend = prices_df[prices_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if not farmgate_trend.empty:
                     farmgate_trend['Date'] = pd.to_datetime(farmgate_trend[['Year', 'Month']].assign(day=1), errors='coerce')
-                    farmgate_trend = farmgate_trend.dropna(subset=['Date']).copy()
+                    farmgate_trend = farmgate_trend.dropna(subset=['Date']).reset_index(drop=True)
                     farmgate_trend = interpolate_missing(farmgate_trend)
                     farmgate_trend['Price Type'] = 'Farmgate'
                 else:
@@ -808,7 +809,7 @@ def main():
                 retail_trend = retail_df[retail_df['commodity_id'] == selected_commodity_id][['Year', 'Month', 'Price']].groupby(['Year', 'Month']).mean().reset_index()
                 if not retail_trend.empty:
                     retail_trend['Date'] = pd.to_datetime(retail_trend[['Year', 'Month']].assign(day=1), errors='coerce')
-                    retail_trend = retail_trend.dropna(subset=['Date']).copy()
+                    retail_trend = retail_trend.dropna(subset=['Date']).reset_index(drop=True)
                     retail_trend = interpolate_missing(retail_trend)
                     retail_trend['Price Type'] = 'Retail'
                 else:
@@ -820,9 +821,9 @@ def main():
                         retail_trend[['Date', 'Price']],
                         on='Date',
                         how='inner',
-                        suffixes=['_farm', '_retail']
+                        suffixes=('_farmgate', '_retail')
                     )
-                    margin_trend['Price'] = margin_trend['Price_retail'] - margin_trend['Price_farm']
+                    margin_trend['Price'] = margin_trend['Price_retail'] - margin_trend['Price_farmgate']
                     margin_trend['Price Type'] = 'Gross Margin'
                     margin_trend = margin_trend[['Date', 'Price', 'Price Type']].dropna(subset=['Price'])
                 else:
