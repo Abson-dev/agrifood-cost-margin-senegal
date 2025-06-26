@@ -511,7 +511,7 @@ def main():
         show_markets = st.sidebar.checkbox("Markets", value=True)
         show_farmgate = st.sidebar.checkbox("Farmgate Prices", value=False)
         show_retail = st.sidebar.checkbox("Retail Prices", value=False)
-        show_population = st.sidebar.checkbox("Population", value=True)
+        show_population = st.sidebar.checkbox("Population", value=False)
         show_merged = st.sidebar.checkbox("Merged Retail-Farmgate Comparison", value=True)
 
         st.sidebar.slider("Map Height (px)", 400, 1000, st.session_state['map_height'], key="map_height")
