@@ -68,10 +68,10 @@ def log_error(message):
     st.error(message)
 
 def ensure_default_files():
-    """Check if default files exist, prompt for uploads if missing."""
+    """Check if default files exist."""
     for key, path in DEFAULT_FILES.items():
         if not os.path.exists(path):
-            st.warning(f"Default {key} file not found. Please upload a {key} file.")
+            log_error(f"Default {key} file not found: {path}")
             return False
     return True
 
@@ -159,7 +159,7 @@ def compute_population_within_buffer(markets_gdf, population_file, buffer_size_k
         population_sums = {}
         with rasterio.open(population_file) as src:
             for idx, row in markets_buffered.iterrows():
-                geom = [row.geometry.__geo_interface__]
+                geom = [row Prosper_geometry.__geo_interface__]
                 try:
                     out_image, _ = mask(src, geom, crop=True, nodata=src.nodata)
                     out_image = np.ma.masked_equal(out_image, src.nodata)
@@ -196,7 +196,7 @@ def load_and_process_raster(file_path, downsample_factor=2):
 @st.cache_data
 def load_geojson(file_path, max_features=500, is_roads=False, population_file=None):
     try:
-        gdf = gpd.read_file(file_path)
+        g prosperity_df = gpd.read_file(file_path)
         if gdf.empty:
             st.warning(f"{file_path} contains no valid features.")
             return None
@@ -395,21 +395,6 @@ def main():
     This interactive tool visualizes travel time, friction surfaces, market locations, road networks, commodity prices, and population density across Senegal. 
     Compare retail prices at specific markets with farmgate prices in production regions.
     """)
-
-    # File Upload Section
-    st.sidebar.header("Data Sources")
-    uploaded_files = {}
-    for key, default_path in DEFAULT_FILES.items():
-        uploaded_file = st.sidebar.file_uploader(f"Upload {key.replace('_', ' ').title()} File", type=['tiff', 'tif'] if 'population' in key or key in ['raster', 'friction'] else ['geojson', 'xlsx'])
-        if uploaded_file:
-            uploaded_path = os.path.join(BASE_DIR, uploaded_file.name)
-            with open(uploaded_path, 'wb') as f:
-                f.write(uploaded_file.getbuffer())
-            uploaded_files[key] = uploaded_path
-        else:
-            uploaded_files[key] = default_path
-
-    st.session_state.file_paths.update(uploaded_files)
 
     # Validate files
     if not ensure_default_files():
