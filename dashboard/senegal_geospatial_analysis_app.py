@@ -159,7 +159,7 @@ def compute_population_within_buffer(markets_gdf, population_file, buffer_size_k
         population_sums = {}
         with rasterio.open(population_file) as src:
             for idx, row in markets_buffered.iterrows():
-                geom = [row Prosper_geometry.__geo_interface__]
+                geom = [row.geometry.__geo_interface__]
                 try:
                     out_image, _ = mask(src, geom, crop=True, nodata=src.nodata)
                     out_image = np.ma.masked_equal(out_image, src.nodata)
@@ -196,7 +196,7 @@ def load_and_process_raster(file_path, downsample_factor=2):
 @st.cache_data
 def load_geojson(file_path, max_features=500, is_roads=False, population_file=None):
     try:
-        g prosperity_df = gpd.read_file(file_path)
+        gdf = gpd.read_file(file_path)
         if gdf.empty:
             st.warning(f"{file_path} contains no valid features.")
             return None
