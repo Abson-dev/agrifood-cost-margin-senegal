@@ -130,11 +130,11 @@ def interpolate_missing(data, date_col='Date', value_col='Price'):
     return pd.DataFrame({'Date': new_dates, value_col: new_values})
 
 def generate_legend_html(breaks, colors, title):
-    """Generate dynamic legend HTML."""
+    """Generate tiny legend HTML."""
     html = f'<div class="legend-container"><div class="legend-title">{title}</div>'
     for i, (b1, b2) in enumerate(zip(breaks[:-1], breaks[1:])):
         color = f'rgb{colors[i]}'
-        label = f'{b1:.3f}–{b2:.3f}' if b2 != np.inf else f'>{b1:.3f}'
+        label = f'{b1:.0f}–{b2:.0f}' if b2 != np.inf else f'>{b1:.0f}'
         html += f'<div class="legend-item"><span class="legend-color" style="background:{color};"></span> {label}</div>'
     html += '</div>'
     return html
@@ -345,19 +345,20 @@ def main():
     }
     .legend-container { 
         background-color: white; 
-        border: 2px solid grey; 
-        padding: 10px; 
-        box-shadow: 2px 2px 6px rgba(0,0,0,0.3); 
-        margin-top: 10px; 
+        border: 1px solid grey; 
+        padding: 5px; 
+        box-shadow: 1px 1px 3px rgba(0,0,0,0.2); 
+        margin-top: 5px; 
         display: block; 
+        font-size: 10px; 
     }
-    .legend-title { font-weight: bold; font-size: 14px; margin-bottom: 10px; }
-    .legend-item { display: flex; align-items: center; margin-bottom: 5px; font-size: 14px; }
-    .legend-color { width: 20px; height: 20px; margin-right: 8px; display: inline-block; }
+    .legend-title { font-weight: bold; font-size: 10px; margin-bottom: 2px; }
+    .legend-item { display: flex; align-items: center; margin-bottom: 2px; font-size: 10px; }
+    .legend-color { width: 10px; height: 10px; margin-right: 4px; display: inline-block; }
     @media (max-width: 600px) {
         .folium-map { height: 50vh; }
-        .legend-container { font-size: 12px; padding: 5px; }
-        .legend-color { width: 15px; height: 15px; }
+        .legend-container { font-size: 8px; padding: 3px; }
+        .legend-color { width: 8px; height: 8px; }
     }
     </style>
     """, unsafe_allow_html=True)
@@ -475,11 +476,11 @@ def main():
         show_travel = st.sidebar.checkbox("Travel Time", value=False)
         show_friction = st.sidebar.checkbox("Friction Surface", value=False)
         show_roads = st.sidebar.checkbox("Roads", value=False)
-        show_markets = st.sidebar.checkbox("Markets", value=False)
+        show_markets = st.sidebar.checkbox("Markets", value=True)
         show_farmgate = st.sidebar.checkbox("Farmgate Prices", value=False)
         show_retail = st.sidebar.checkbox("Retail Prices", value=False)
         show_population = st.sidebar.checkbox("Population", value=False)
-        show_merged = st.sidebar.checkbox("Merged Retail-Farmgate Comparison", value=False)
+        show_merged = st.sidebar.checkbox("Merged Retail-Farmgate Comparison", value=True)
 
         st.sidebar.slider("Map Height (px)", 400, 1000, st.session_state['map_height'], key="map_height")
         st.sidebar.button("Clear Temporary Files", on_click=cleanup_temp_files)
@@ -679,7 +680,7 @@ def main():
                                 with col2:
                                     st.markdown(generate_legend_html(friction_breaks, friction_colors, "Friction (min/m)"), unsafe_allow_html=True)
                             if show_population and population_breaks and population_colors:
-                                st.markdown(generate_legend_html(population_breaks, population_colors, f"Population ({min(selected_year, 2020)}) (people per pixel)"), unsafe_allow_html=True)
+                                st.markdown(generate_legend_html(population_breaks, population_colors, f"Population ({min(selected_year, 2020)})"), unsafe_allow_html=True)
                     except Exception as e:
                         log_error(f"Map rendering failed: {str(e)}")
 
