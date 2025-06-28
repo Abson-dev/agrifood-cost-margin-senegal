@@ -107,7 +107,6 @@ def calculate_nearest_market_distance(farmgate_df, markets_gdf):
     market_coords = [(row.geometry.y, row.geometry.x) for _, row in markets_gdf.iterrows() if row.geometry.type == 'Point']
     
     if not market_coords:
-        st.warning("No valid market coordinates found for distance calculation.")
         return farmgate_df
     
     for idx, row in farmgate_df.iterrows():
@@ -166,7 +165,6 @@ def compute_population_within_buffer(markets_gdf, population_file, buffer_size_k
                     population_sum = np.nansum(out_image)
                     population_sums[idx] = round(population_sum, 2) if not np.isnan(population_sum) else 0
                 except Exception as e:
-                    st.warning(f"Failed to compute population for market at index {idx}: {e}")
                     population_sums[idx] = 0
         return population_sums
     except Exception as e:
@@ -184,7 +182,7 @@ def load_and_process_raster(file_path, downsample_factor=2):
                 log_error(f"Raster {file_path} must have exactly one band.")
                 return None, None
             if src.crs is None:
-                st.warning(f"No CRS found for {file_path}. Assuming WGS84.")
+                log_error(f"No CRS found for {file_path}. Assuming WGS84.")
             data = src.read(1, out_shape=(1, src.height // downsample_factor, src.width // downsample_factor), resampling=rasterio.enums.Resampling.bilinear)
             nodata = src.nodata
             bounds = (src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top)
@@ -198,7 +196,6 @@ def load_geojson(file_path, max_features=500, is_roads=False, population_file=No
     try:
         gdf = gpd.read_file(file_path)
         if gdf.empty:
-            st.warning(f"{file_path} contains no valid features.")
             return None
         if gdf.crs != 'EPSG:4326':
             gdf = gdf.to_crs('EPSG:4326')
@@ -206,7 +203,6 @@ def load_geojson(file_path, max_features=500, is_roads=False, population_file=No
             valid_highways = ['motorway', 'trunk', 'primary', 'secondary']
             gdf = gdf[gdf['highway'].isin(valid_highways)] if 'highway' in gdf.columns else gdf
         if len(gdf) > max_features:
-            st.warning(f"GeoJSON file {file_path} has {len(gdf)} features. Limiting to {max_features}.")
             gdf = gdf.head(max_features)
         
         if not is_roads and population_file:
@@ -214,7 +210,6 @@ def load_geojson(file_path, max_features=500, is_roads=False, population_file=No
             gdf['population_5km'] = gdf.index.map(population_sums)
         
         geojson_data = json.loads(gdf.to_json())
-        st.info(f"Loaded {len(gdf)} features from {file_path}")
         return geojson_data if geojson_data['features'] else None
     except Exception as e:
         log_error(f"Failed to load {file_path}: {e}")
@@ -225,18 +220,14 @@ def load_price_data(file_path):
     try:
         prices_df = pd.read_excel(file_path, sheet_name='Farmgate prices Senegal')
         if prices_df.empty:
-            st.warning("Farmgate prices Excel is empty")
             return pd.DataFrame()
         farmgate_required_columns = ['Régions Name', 'Commodity', 'commodity_english', 'commodity_id', 'Price', 'Unit2', 'Régions - Latitude', 'Régions - Longitude', 'Year', 'Month']
         missing_cols = [col for col in farmgate_required_columns if col not in prices_df.columns]
-        if missing_cols:
-            st.warning(f"Missing columns in farmgate prices: {', '.join(missing_cols)}. Using available data.")
         prices_df['Price'] = pd.to_numeric(prices_df['Price'], errors='coerce')
         prices_df['Year'] = pd.to_numeric(prices_df['Year'], errors='coerce')
         prices_df['Month'] = pd.to_numeric(prices_df['Month'], errors='coerce')
         prices_df = prices_df.dropna(subset=['Price', 'Year', 'Month', 'Régions - Latitude', 'Régions - Longitude', 'commodity_id'])
         if not prices_df.empty and (prices_df['Year'] < 2016).any() or (prices_df['Year'] > 2025).any():
-            st.warning("Farmgate data contains years outside 2016–2025. Filtering.")
             prices_df = prices_df[prices_df['Year'].between(2016, 2025)]
         return prices_df
     except Exception as e:
@@ -248,19 +239,15 @@ def load_retail_data(file_path):
     try:
         retail_df = pd.read_excel(file_path, sheet_name='Retails Price Senegal')
         if retail_df.empty:
-            st.warning("Retail prices Excel is empty")
             return pd.DataFrame()
         retail_required_columns = ['market', 'commodity', 'commodity_id', 'Price', 'Unit2', 'latitude', 'longitude', 'Year', 'Month']
         missing_cols = [col for col in retail_required_columns if col not in retail_df.columns]
-        if missing_cols:
-            st.warning(f"Missing columns in retail prices: {', '.join(missing_cols)}. Using available data.")
         retail_df = retail_df.rename(columns={'price': 'Price'})
         retail_df['Price'] = pd.to_numeric(retail_df['Price'], errors='coerce')
         retail_df['Year'] = pd.to_numeric(retail_df['Year'], errors='coerce')
         retail_df['Month'] = pd.to_numeric(retail_df['Month'], errors='coerce')
         retail_df = retail_df.dropna(subset=['Price', 'Year', 'Month', 'latitude', 'longitude', 'commodity_id'])
         if not retail_df.empty and (retail_df['Year'] < 2016).any() or (retail_df['Year'] > 2025).any():
-            st.warning("Retail data contains years outside 2016–2025. Filtering.")
             retail_df = retail_df[retail_df['Year'].between(2016, 2025)]
         return retail_df
     except Exception as e:
@@ -272,15 +259,12 @@ def load_merged_data(file_path):
     try:
         merged_df = pd.read_excel(file_path, sheet_name='merged_data')
         if merged_df.empty:
-            st.warning("Merged data Excel sheet is empty")
             return pd.DataFrame()
         required_columns = ['date', 'market', 'market_id', 'latitude', 'longitude', 'commodity_retail', 'commodity_id',
                            'price_retail', 'unit2_retail', 'year', 'month', 'commodity_farmgate', 'region_name',
                            'region_latitude', 'region_longitude', 'price_farmgate', 'unit2_farmgate', 'commodity_english',
                            'gross_margin', 'distance_km']
         missing_cols = [col for col in required_columns if col not in merged_df.columns]
-        if missing_cols:
-            st.warning(f"Missing columns in merged data: {', '.join(missing_cols)}. Using available data.")
         merged_df['price_retail'] = pd.to_numeric(merged_df['price_retail'], errors='coerce')
         merged_df['price_farmgate'] = pd.to_numeric(merged_df['price_farmgate'], errors='coerce')
         merged_df['gross_margin'] = pd.to_numeric(merged_df['gross_margin'], errors='coerce')
@@ -289,7 +273,6 @@ def load_merged_data(file_path):
         merged_df['month'] = pd.to_numeric(merged_df['month'], errors='coerce')
         merged_df = merged_df.dropna(subset=['price_retail', 'price_farmgate', 'latitude', 'longitude', 'region_latitude', 'region_longitude', 'commodity_id', 'year', 'month'])
         if not merged_df.empty and (merged_df['year'] < 2016).any() or (merged_df['year'] > 2025).any():
-            st.warning("Merged data contains years outside 2016–2025. Filtering.")
             merged_df = merged_df[merged_df['year'].between(2016, 2025)]
         return merged_df
     except Exception as e:
@@ -336,7 +319,6 @@ def generate_population_image(data, bounds):
         Image.fromarray(rgb).save(population_png_path)
         st.session_state['temp_files'].append(population_png_path)
     atexit.register(cleanup_temp_files)
-    st.write(f"Population data range: min={np.nanmin(data):.2f}, max={np.nanmax(data):.2f}")
     return population_png_path, [[bounds[1], bounds[0]], [bounds[3], bounds[2]]], breaks, colors
 
 # -------------------------------
@@ -521,7 +503,6 @@ def main():
                 latest_farmgate_prices = calculate_nearest_market_distance(latest_farmgate_prices, markets_gdf)
                 if len(latest_farmgate_prices) > 500:
                     latest_farmgate_prices = latest_farmgate_prices.head(500)
-                    st.warning("Limited to 500 farmgate price markers for performance.")
             if not retail_df.empty:
                 filtered_retail = retail_df[retail_df['Year'] == selected_year] if selected_year else retail_df
                 if selected_month:
@@ -533,7 +514,6 @@ def main():
                     latest_retail_prices = latest_retail_prices[latest_retail_prices['commodity_id'].isin(selected_commodity_ids)]
                 if len(latest_retail_prices) > 500:
                     latest_retail_prices = latest_retail_prices.head(500)
-                    st.warning("Limited to 500 retail price markers for performance.")
             if not merged_df.empty:
                 filtered_merged = merged_df[merged_df['year'] == selected_year] if selected_year else merged_df
                 if selected_month:
@@ -547,7 +527,6 @@ def main():
                 latest_merged_prices = filtered_merged.sort_values('date').groupby(['market', 'region_name', 'commodity_id']).last().reset_index()
                 if len(latest_merged_prices) > 500:
                     latest_merged_prices = latest_merged_prices.head(500)
-                    st.warning("Limited to 500 merged price markers for performance.")
             st.session_state.latest_farmgate_prices = latest_farmgate_prices
             st.session_state.latest_retail_prices = latest_retail_prices
             st.session_state.latest_merged_prices = latest_merged_prices
@@ -557,20 +536,13 @@ def main():
         # Render Map
         map_placeholder = st.empty()
         with map_placeholder.container():
-            # Check for empty price data and display notifications
+            # Check for empty price data
             data_missing = False
             if show_farmgate and st.session_state.latest_farmgate_prices.empty:
-                selected_commodities = ", ".join([commodity_id_to_name.get(cid, str(cid)) for cid in selected_commodity_ids]) or "any commodity"
-                st.warning(f"No farmgate price data available for {selected_commodities} in {month_names.get(selected_month, selected_month)} {selected_year}. Map will not render.")
                 data_missing = True
             if show_retail and st.session_state.latest_retail_prices.empty:
-                selected_commodities = ", ".join([commodity_id_to_name.get(cid, str(cid)) for cid in selected_commodity_ids]) or "any commodity"
-                st.warning(f"No retail price data available for {selected_commodities} in {month_names.get(selected_month, selected_month)} {selected_year}. Map will not render.")
                 data_missing = True
             if show_merged and st.session_state.latest_merged_prices.empty:
-                selected_commodities = ", ".join([commodity_id_to_name.get(cid, str(cid)) for cid in selected_commodity_ids]) or "any commodity"
-                market_text = f"market {selected_market}" if selected_market != "All" else "any market"
-                st.warning(f"No merged retail-farmgate data available for {selected_commodities} in {market_text}, {month_names.get(selected_month, selected_month)} {selected_year}. Map will not render.")
                 data_missing = True
 
             # Render map only if no price data is missing for enabled price layers or if non-price layers are enabled
@@ -607,7 +579,7 @@ def main():
                                     ).add_to(market_group)
                                     valid_markers += 1
                             if valid_markers == 0:
-                                st.warning("No valid market locations found.")
+                                log_error("No valid market locations found.")
                             else:
                                 market_group.add_to(m)
 
@@ -816,7 +788,7 @@ def main():
 
                 combined_trend = pd.concat([farmgate_trend, retail_trend, margin_trend], ignore_index=True)
                 if combined_trend.empty:
-                    st.warning(f"No trend data available for {commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)}.")
+                    log_error(f"No trend data available for {commodity_id_to_name.get(selected_commodity_id, selected_commodity_id)}.")
                 else:
                     fig = go.Figure()
                     if 'Farmgate' in combined_trend['Price Type'].values:
@@ -866,7 +838,7 @@ def main():
             except Exception as e:
                 log_error(f"Failed to generate price trends: {e}")
         else:
-            st.warning("No data available for price trends. Please check your data.")
+            log_error("No data available for price trends. Please check your data.")
 
     # Footer
     st.markdown("""
