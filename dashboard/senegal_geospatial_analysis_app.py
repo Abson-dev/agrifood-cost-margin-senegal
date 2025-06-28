@@ -493,11 +493,11 @@ def main():
         show_travel = st.sidebar.checkbox("Travel Time", value=False)
         show_friction = st.sidebar.checkbox("Friction Surface", value=False)
         show_roads = st.sidebar.checkbox("Roads", value=False)
-        show_markets = st.sidebar.checkbox("Markets", value=True)
+        show_markets = st.sidebar.checkbox("Markets", value=False)
         show_farmgate = st.sidebar.checkbox("Farmgate Prices", value=False)
         show_retail = st.sidebar.checkbox("Retail Prices", value=False)
         show_population = st.sidebar.checkbox("Population", value=False)
-        show_merged = st.sidebar.checkbox("Merged Retail-Farmgate Comparison", value=True)
+        show_merged = st.sidebar.checkbox("Merged Retail-Farmgate Comparison", value=False)
 
         st.sidebar.slider("Map Height (px)", 400, 1000, st.session_state['map_height'], key="map_height")
         st.sidebar.button("Clear Temporary Files", on_click=cleanup_temp_files)
