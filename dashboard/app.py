@@ -303,6 +303,9 @@ def load_retail_data(file_path):
 @st.cache_data
 def load_merged_data(file_path):
     try:
+        # This function is specifically designed to load the 'merged_data' sheet.
+        # The error indicates that 'merged_data' sheet is in 'merged_farmgate_retail_prices_senegal.xlsx'.
+        # So, this function should only be called with the path to that specific file.
         merged_df = pd.read_excel(file_path, sheet_name='merged_data')
         if merged_df.empty:
             return pd.DataFrame()
@@ -326,7 +329,7 @@ def load_merged_data(file_path):
         return pd.DataFrame()
 
 @st.cache_resource # Use st.cache_resource for models and scalers
-def load_all_models_and_scalers(commodity_configs, data_for_normalization_path):
+def load_all_models_and_scalers(commodity_configs, data_for_normalization_file_path): # Renamed param for clarity
     all_models_and_scalers = {}
     
     # Define the numerical features that were used for training and normalization
@@ -338,16 +341,15 @@ def load_all_models_and_scalers(commodity_configs, data_for_normalization_path):
 
     try:
         # Load the full data used for training to fit the imputer and get min/max values
-        full_training_data_df = pd.read_excel(data_for_normalization_path)
+        # This assumes final_merged_output_senegal.xlsx is either a single sheet or the first sheet contains the data
+        # The original analysis scripts read this file without a sheet_name.
+        full_training_data_df = pd.read_excel(data_for_normalization_file_path)
         
-        # Pre-calculate transaction costs for the entire dataset if needed for any feature calculation
+        # Pre-calculate transport costs for the entire dataset
         full_training_data_df['transport_cost'] = full_training_data_df['distance_km'] * TRANSPORT_RATE_XOF_PER_KG_KM
         
-        # Fit a global imputer if needed, or fit per commodity later
-        # For now, we'll fit imputer and scalers per commodity to ensure consistency with analysis scripts
-        
     except FileNotFoundError:
-        log_error(f"Data for normalization (e.g., {data_for_normalization_path}) not found. Cannot load models/scalers.")
+        log_error(f"Data for normalization (e.g., {data_for_normalization_file_path}) not found. Cannot load models/scalers.")
         return {}
     except Exception as e:
         log_error(f"Error loading full training data for scalers: {e}")
@@ -468,7 +470,7 @@ def generate_population_image(data, bounds):
 def predict_transaction_cost_commodity(commodity_key, input_data, models_and_scalers):
     if commodity_key not in models_and_scalers:
         st.error(f"Models and scalers for {commodity_key.capitalize()} not loaded.")
-        return None, None
+        return None, None, None
 
     commodity_info = models_and_scalers[commodity_key]
     rf_model = commodity_info['rf_model']
@@ -479,7 +481,7 @@ def predict_transaction_cost_commodity(commodity_key, input_data, models_and_sca
 
     if rf_model is None or xgb_model is None or imputer is None or not min_max_values:
         st.error(f"Models or preprocessing objects for {commodity_key.capitalize()} are not fully loaded. Cannot make predictions.")
-        return None, None
+        return None, None, None
 
     # Create a DataFrame from input data
     input_df = pd.DataFrame([input_data])
@@ -490,20 +492,23 @@ def predict_transaction_cost_commodity(commodity_key, input_data, models_and_sca
         'market_population_5km', 'year', 'price_farmgate', 'distance_km'
     ]
     
-    # Filter to only columns that exist in input_df and are numerical
-    cols_to_impute_in_input = [col for col in numerical_cols_for_imputation if col in input_df.columns]
-    
     # Ensure all columns expected by imputer are present, fill with NaN if missing temporarily
-    for col in imputer.feature_names_in_: # Use feature_names_in_ from fitted imputer
-        if col not in input_df.columns:
-            input_df[col] = np.nan # Add missing columns with NaN for imputation
-
-    # Apply imputation
-    if not input_df[imputer.feature_names_in_].empty:
-        input_df[imputer.feature_names_in_] = imputer.transform(input_df[imputer.feature_names_in_])
+    # Use imputer.feature_names_in_ to get the exact columns the imputer was fitted on
+    if imputer.feature_names_in_ is not None:
+        for col in imputer.feature_names_in_:
+            if col not in input_df.columns:
+                input_df[col] = np.nan # Add missing columns with NaN for imputation
+        
+        # Apply imputation
+        try:
+            input_df[imputer.feature_names_in_] = imputer.transform(input_df[imputer.feature_names_in_])
+        except ValueError as e:
+            log_error(f"Error during imputation for {commodity_key.capitalize()}: {e}. Check if input features match training features.")
+            return None, None, None
     else:
-        st.warning(f"Input DataFrame is empty for imputation for {commodity_key.capitalize()}.")
-        return None, None
+        log_error(f"Imputer for {commodity_key.capitalize()} was not fitted correctly. Cannot perform imputation.")
+        return None, None, None
+
 
     # Apply normalization using the stored min/max values
     for col in ['travel_time_mean', 'friction_mean', 'vim', 'rfh', 'market_population_5km', 'year']:
@@ -712,14 +717,17 @@ def main():
         st.header("Commodity Price and Margin Trends")
         st.markdown("Analyze historical price data and gross margins for different commodities.")
 
-        merged_data_path = st.session_state.file_paths.get('merged_data_for_models')
-        if not merged_data_path or not os.path.exists(merged_data_path):
-            st.warning("Merged data file not found. Please ensure 'final_merged_output_senegal.xlsx' is available for price trend analysis.")
+        # Corrected: Use 'prices' file path for merged_data sheet for price trends
+        merged_data_path_for_trends = st.session_state.file_paths.get('prices') 
+
+        if not merged_data_path_for_trends or not os.path.exists(merged_data_path_for_trends):
+            st.warning("Merged data file for price trends not found. Please ensure 'merged_farmgate_retail_prices_senegal.xlsx' is available.")
             st.markdown("You can upload this file in the 'Data & File Management' tab.")
             st.session_state['latest_merged_prices'] = pd.DataFrame()
         else:
             if st.session_state['latest_merged_prices'].empty:
-                st.session_state['latest_merged_prices'] = load_merged_data(merged_data_path)
+                # Call load_merged_data with the correct file path
+                st.session_state['latest_merged_prices'] = load_merged_data(merged_data_path_for_trends)
             
             if not st.session_state['latest_merged_prices'].empty:
                 df_trends = st.session_state['latest_merged_prices'].copy()
@@ -796,7 +804,7 @@ def main():
                 else:
                     log_error("No data available for price trends for the selected commodity. Please check your data.")
             else:
-                log_error("No data available for price trends. Please check your data or upload 'final_merged_output_senegal.xlsx'.")
+                log_error("No data available for price trends. Please check your data or upload 'merged_farmgate_retail_prices_senegal.xlsx'.") # Updated message
 
     with tabs[2]: # Predict Transaction Cost
         st.header("Predict Transaction Cost")
@@ -1013,7 +1021,10 @@ def main():
             with open(temp_file_path, "wb") as f:
                 f.write(uploaded_prices.getbuffer())
             st.session_state['file_paths']['prices'] = temp_file_path
-            st.session_state['file_paths']['merged_data_for_models'] = temp_file_path # Update path for model data
+            # The 'prices' file is now used for 'merged_data' sheet for trends.
+            # If this uploaded file is also intended to be the 'merged_data_for_models', update that too.
+            # Assuming the user might upload a combined file here.
+            st.session_state['file_paths']['merged_data_for_models'] = temp_file_path 
             st.success(f"Merged Prices Excel uploaded and set to: {temp_file_path}")
             # Clear cached data to force reload with new file
             st.cache_data.clear()
