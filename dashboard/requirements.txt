@@ -6,11 +6,10 @@ rasterio
 Pillow
 folium
 streamlit-folium
-scikit-learn
-xgboost
+scikit-learn==1.2.2  # Pinning scikit-learn version
+xgboost==1.7.6       # Pinning xgboost version
 plotly
 matplotlib
 seaborn
 geopy
 scipy
-openpyxl
